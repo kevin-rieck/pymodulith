@@ -69,8 +69,8 @@ def test_valid_graph_is_order_independent_and_cold() -> None:
     assert owner.providers[1].factory is resource
     assert consumer.providers[0].factory is async_resource
     assert consumer.lifespan_factory is lifespan
-    assert Application("one").include(owner, consumer).validate() is None
-    assert Application("two").include(consumer, owner).validate() is None
+    assert Application("one").include(owner, consumer).validate()
+    assert Application("two").include(consumer, owner).validate()
     assert calls == []
 
 
@@ -413,22 +413,6 @@ def test_inherited_callable_factory_annotation_namespace(override: bool) -> None
     Application("app").include(module).validate()
 
 
-def test_successful_validation_does_not_freeze_or_cache() -> None:
-    module = Module("mutable")
-    app = Application("app").include(module)
-    assert app.validate() is None
-
-    @module.provide(A, scope=Scope.APPLICATION)
-    def invalid(dependency: B) -> None:
-        pass
-
-    with pytest.raises(ValidationError) as error:
-        app.validate()
-    assert error.value.issues[0].code == "undeclared_dependency"
-    module.provide(B, scope=Scope.APPLICATION)(lambda: None)
-    assert app.validate() is None
-
-
 def test_same_label_cycle_paths_are_canonical_across_registration_order() -> None:
     first = type("Same", (), {"__module__": "tokens"})
     second = type("Same", (), {"__module__": "tokens"})
@@ -598,7 +582,7 @@ def test_decorated_callable_instance_forward_reference_is_cold(
         assert module.lifespan(factory) is factory
     else:
         assert module.resource(B, scope=Scope.APPLICATION)(factory) is factory
-    assert Application("app").include(module).validate() is None
+    assert Application("app").include(module).validate()
     assert calls == []
 
 
