@@ -1,7 +1,7 @@
 # ADR 0001: Select a compiled-plan custom resolver, gated on lifecycle safety
 
-Status: **accepted decision; limited serial executor implemented, safety gates
-incomplete**. This decision compares
+Status: **accepted decision; lifecycle and limited serial executor implemented,
+concurrent resolution safety gates incomplete**. This decision compares
 Dishka 1.10.1 with a deliberately unsafe reference, not two production runtimes.
 The issue #5 experiments live only under `experiments/backend_comparison/`;
 none is exported or included in the distribution. The existing module and
