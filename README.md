@@ -1,10 +1,47 @@
 # pymodulith
 
-Minimal Python 3.13+ package scaffold using uv, pytest, ty, and Ruff.
+Explicit typed composition metadata for Python 3.13+. Registration is available
+now; graph validation, dependency resolution and lifecycle runtime are planned,
+not yet implemented. See the [M1 implementation contract](docs/m1-contract.md).
 
-The only current API is `hello()`, a disposable scaffold to be removed with its
-placeholder test when real public exports land. The planned, not yet implemented
-M1 API and requirements are in the [M1 implementation contract](docs/m1-contract.md).
+```python
+from typing import Protocol
+
+from pymodulith import Application, Module, Scope
+
+
+class Inventory(Protocol):
+    def available(self) -> int: ...
+
+
+class Stock:
+    def available(self) -> int:
+        return 1
+
+
+inventory = Module("inventory")
+
+
+@inventory.provide(Inventory, scope=Scope.APPLICATION, export=True)
+def stock() -> Stock:
+    return Stock()
+
+
+app = Application("shop").include(inventory)
+```
+
+Tokens are classes or protocols, compared by identity. Providers are private
+unless `export=True`; modules declare permitted external tokens with
+`Module("name", requires=[Token])`. `provide` records a value factory;
+`resource` records a context-manager factory, and `lifespan` records a module
+hook. Registration does not call factories or inspect their annotations.
+Decorators return the original factory. Input errors raise `RegistrationError`.
+
+`Module.requires`, `Module.providers`, and `Application.modules` are read-only
+tuple views. Each frozen `Provider` records its `token`, `factory`, `scope`,
+`export` flag and `kind` (`"value"` or `"resource"`); a module's optional hook
+is available as `lifespan_factory`. Later registrations are reflected in new
+views. No graph checks or runtime instances are created by registration.
 
 ## Setup
 
