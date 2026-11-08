@@ -236,11 +236,12 @@ override is assumed.
 
 M1 targets explicit composition, graph validation, immutable compiled plans,
 scoped resolution, lifecycle safety, a backend comparison, framework-free
-examples, and installable-package verification. Backend selection is still open:
-compare a mature DI backend against the experimental custom resolver under the
-same correctness and lifecycle tests before choosing; do not expose a public
-pluggable-backend API by assumption. Real concurrency/cancellation guarantees
-and performance evidence must be demonstrated, not inferred from this document.
+examples, and installable-package verification. The
+[backend comparison](adrs/0001-runtime-backend.md) selects a custom compiled-plan
+resolver subject to mandatory safety gates; the reference spike is not a
+production runtime. Do not expose a public pluggable-backend API. Real
+concurrency/cancellation guarantees and performance evidence must be demonstrated,
+not inferred from the backend decision or this document.
 
 Later work includes CLI/graph export and source-import enforcement, transport
 adapters, multi-wheel composition and optional discovery. M1 validation checks
