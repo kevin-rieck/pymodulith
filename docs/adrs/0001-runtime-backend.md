@@ -1,8 +1,8 @@
 # ADR 0001: Select a compiled-plan custom resolver, gated on lifecycle safety
 
-Status: **accepted decision; lifecycle and limited serial executor implemented,
-concurrent resolution safety gates incomplete**. This decision compares
-Dishka 1.10.1 with a deliberately unsafe reference, not two production runtimes.
+Status: **accepted decision; lifecycle and concurrent executor implemented**.
+The historical decision compares Dishka 1.10.1 with a deliberately unsafe
+reference, not two production runtimes.
 The issue #5 experiments live only under `experiments/backend_comparison/`;
 none is exported or included in the distribution. The existing module and
 contract facade remains backend-independent. There is no public backend choice.
@@ -102,6 +102,34 @@ cancellation during resource enter/exit and shutdown, concurrent failure
 broadcast, invalid resource diagnostics, every startup fault position, complete
 operation-drain races, cross-loop use, broad graph shapes, and external I/O. The
 matrix is a bounded decision probe, not the full M1 acceptance suite.
+
+## Selected runtime acceptance matrix
+
+`uv run pytest tests/test_selected_runtime_matrix.py -q` runs all 19 named
+scenarios above against the actual compiled-plan runtime, using a test-only
+adapter that supplies the scenario's already compiled plan. All 19 pass in the
+issue #8 implementation; the original reference and Dishka observations above
+are unchanged. The matrix remains a bounded probe, not exhaustive evidence.
+`tests/test_concurrent_resolution.py` separately uses event barriers and bounded
+waits for shared failure/retry, first and later waiter cancellation, transitive
+fan-in, independent progress, dynamic cycles, concurrent rollback, in-flight
+scope exit, cancellation and cross-loop/thread rejection. The existing runtime
+and lifecycle tests cover 100 overlapping isolated operations, eager order,
+reverse cleanup, error preservation, task affinity and context isolation.
+
+Provider tasks use a snapshot of the creating task's context; their changes are
+not propagated back to callers. Entry and exit of each provider resource use
+its owner task. Module hooks remain host-task-owned: a host cancellation can
+interrupt an individual hook exit, and a resource or hook whose own entry fails
+must release its own partially acquired state. The host must allow settlement
+and cleanup to finish. There is no guarantee for abrupt termination, forcibly
+cancelled owner-task exit code, multiprocess sharing or use after scope exit.
+Cycle checks also conservatively treat a child task spawned by an active provider
+as part of that initializer; a detached child can therefore receive a cycle
+error for a circular lookup even if its parent would not await it. Provenance
+expires when the initializer finishes; non-cyclic child lookups and ordinary
+host task sharing remain supported. See the README for the exact failure, retry
+and cancellation policy.
 
 ## Surface, diagnosability, dependencies and timings
 
