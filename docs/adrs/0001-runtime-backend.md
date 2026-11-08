@@ -1,6 +1,7 @@
 # ADR 0001: Select a compiled-plan custom resolver, gated on lifecycle safety
 
-Status: **accepted decision, runtime not implemented**. This decision compares
+Status: **accepted decision; limited serial executor implemented, safety gates
+incomplete**. This decision compares
 Dishka 1.10.1 with a deliberately unsafe reference, not two production runtimes.
 The issue #5 experiments live only under `experiments/backend_comparison/`;
 none is exported or included in the distribution. The existing module and
@@ -8,7 +9,7 @@ contract facade remains backend-independent. There is no public backend choice.
 
 ## Decision
 
-Select **one custom compiled-plan resolver** for the follow-up runtime. Do not
+Select **one custom compiled-plan resolver** for the runtime. Do not
 ship the reference implementation as-is: it fails exactly-once initialization
 and cancellation tests. Complete the mandatory gates below before claiming a
 working/safe runtime. Reconsider Dishka if a supported version demonstrates

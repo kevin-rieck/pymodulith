@@ -1,14 +1,15 @@
 # M1 implementation contract
 
-**Status: registration, declared-graph validation and compiled plans implemented;
-runtime planned.** This is the reviewable contract for the M1 composition
-kernel, not documentation of a working runtime. The current API is described
+**Status: registration, validation, compiled plans and limited serial scoped
+resolution implemented; lifecycle and concurrency safety incomplete.** This is
+the reviewable contract for the full M1 composition kernel, not a claim that
+all runtime gates have passed. The current API and its limitations are described
 in the [README](../README.md). Python **>=3.13** remains the baseline.
 
 ## Target API
 
-The following is a design example of the full planned API, not runnable against
-the current package.
+The following illustrates the full target API. Module lifespan hooks are not
+yet executed by the current scoped executor.
 Registration belongs at the composition boundary; the business classes and
 contract need no framework imports, decorators, or base classes.
 
@@ -218,8 +219,8 @@ override is assumed.
 - [ ] **Immutability and compilation:** repeated validation returns the same
   snapshot; nested published metadata and original registration handles cannot
   change compiled behavior; failed validation can be corrected. Compile-only
-  tests cover reflection and caching; runtime and later-lifespan no-reflection
-  tests remain deferred until runtime exists.
+  tests cover reflection and caching; comprehensive runtime and later-lifespan
+  no-reflection evidence remains deferred to issue #10.
 - [ ] **Scope ownership:** app providers cannot depend on operation providers;
   lifespan hooks receive only app dependencies. Cache once per scope, isolate
   independent operations and applications, reject `get` outside an active
