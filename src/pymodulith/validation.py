@@ -1,6 +1,7 @@
 """Cold-path validation of declared composition graphs."""
 
 import inspect
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -49,11 +50,22 @@ def _dependencies(
             f"{getattr(factory, '__module__', type(factory).__module__)}."
             f"{getattr(factory, '__qualname__', type(factory).__qualname__)}"
         )
-        signature = inspect.signature(factory)
-        target = inspect.unwrap(factory)
+        if sys.version_info >= (3, 14):
+            from annotationlib import Format
+
+            # shortcut: non-name errors abort; upgrade if stdlib isolates hints.
+            signature = inspect.signature(factory, annotation_format=Format.FORWARDREF)
+        else:
+            signature = inspect.signature(factory)
+        target = inspect.unwrap(factory, stop=inspect.ismethod)
         while isinstance(target, partial):
-            target = inspect.unwrap(target.func)
+            target = inspect.unwrap(target.func, stop=inspect.ismethod)
         localns_class = None
+        metaclass = None
+        if inspect.ismethod(target):
+            owner = target.__self__
+            localns_class = owner if inspect.isclass(owner) else type(owner)
+            target = inspect.unwrap(target)
         if inspect.isclass(target):
             localns_class = target
             call = inspect.unwrap(type(target).__call__)
@@ -62,6 +74,7 @@ def _dependencies(
                 for name in ("__new__", "__init__")
             }
             if inspect.isfunction(call):
+                metaclass = type(target)
                 target = call
             else:
                 for base in target.__mro__:
@@ -84,6 +97,9 @@ def _dependencies(
         localns = None
         if localns_class is not None:
             localns = {}
+            if metaclass is not None:
+                for base in reversed(metaclass.__mro__):
+                    localns.update(vars(base))
             for base in reversed(localns_class.__mro__):
                 localns.update(vars(base))
         globalns = getattr(target, "__globals__", {})
@@ -135,7 +151,7 @@ def _dependencies(
             )
             continue
 
-        # Return hints and unrelated bad hints must not interfere.
+        # Resolve each inspected parameter independently; return hints are not used.
         def annotation_holder() -> None:
             pass
 

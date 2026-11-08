@@ -600,3 +600,159 @@ def test_decorated_callable_instance_forward_reference_is_cold(
         assert module.resource(B, scope=Scope.APPLICATION)(factory) is factory
     assert Application("app").include(module).validate() is None
     assert calls == []
+
+
+@pytest.mark.parametrize("method_kind", ["instance", "class"])
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("override", [False, True])
+def test_bound_method_annotation_namespace(
+    method_kind: str, wrapped: bool, override: bool
+) -> None:
+    from functools import partial, wraps
+
+    class Base:
+        Alias = A
+
+        def instance(self, dependency: "Alias") -> None:
+            raise AssertionError("validation must not invoke the factory")
+
+        @classmethod
+        def class_method(cls, dependency: "Alias") -> None:
+            raise AssertionError("validation must not invoke the factory")
+
+    class Child(Base):
+        Alias = B
+
+    owner = Child if override else Base
+    factory = owner().instance if method_kind == "instance" else owner.class_method
+    if wrapped:
+
+        @wraps(factory)
+        def wrapper(*args, **kwargs):
+            raise AssertionError("validation must not invoke the factory")
+
+        factory = partial(wrapper)
+    module = Module("methods")
+    module.provide(B if override else A, scope=Scope.APPLICATION)(lambda: None)
+    module.provide(C, scope=Scope.APPLICATION)(factory)
+    Application("app").include(module).validate()
+
+
+def test_metaclass_call_annotation_namespace() -> None:
+    class BaseMeta(type):
+        Alias = A
+
+        def __call__(cls, dependency: "Alias", other: "ClassAlias") -> object:  # noqa: F821  # ty: ignore[unresolved-reference]
+            raise AssertionError("validation must not invoke the factory")
+
+    class Meta(BaseMeta):
+        pass
+
+    class Factory(metaclass=Meta):
+        ClassAlias = A
+
+    module = Module("metaclass")
+    module.provide(A, scope=Scope.APPLICATION)(lambda: None)
+    module.provide(B, scope=Scope.APPLICATION)(Factory)
+    Application("app").include(module).validate()
+
+
+def test_decorated_bound_method_annotation_namespace() -> None:
+    from functools import wraps
+
+    def decorate(method):
+        @wraps(method)
+        def wrapper(*args, **kwargs):
+            raise AssertionError("validation must not invoke the factory")
+
+        return wrapper
+
+    class Factory:
+        Alias = A
+
+        @decorate
+        def make(self, dependency: "Alias") -> B:
+            raise AssertionError("validation must not invoke the factory")
+
+    module = Module("decorated_method")
+    module.provide(A, scope=Scope.APPLICATION)(lambda: None)
+    module.provide(B, scope=Scope.APPLICATION)(Factory().make)
+    Application("app").include(module).validate()
+
+
+def test_lazy_annotations_ignore_return_and_aggregate_parameters() -> None:
+    import sys
+
+    if sys.version_info < (3, 14):
+        pytest.skip("lazy annotations require Python 3.14")
+
+    namespace: dict[str, Any] = {"A": A}
+    exec("def valid() -> MissingReturn: pass", namespace)
+    exec(
+        "def invalid(first, second: MissingDependency, third: AnotherMissing, "
+        "fourth: A) -> MissingReturn: pass",
+        namespace,
+    )
+    module = Module("lazy_annotations")
+    module.provide(A, scope=Scope.APPLICATION)(namespace["valid"])
+    module.provide(B, scope=Scope.APPLICATION)(namespace["invalid"])
+    found = issues(module)
+    assert [(issue.code, issue.parameter) for issue in found] == [
+        ("missing_annotation", "first"),
+        ("unresolved_annotation", "second"),
+        ("unresolved_annotation", "third"),
+    ]
+    assert all(issue.module == "lazy_annotations" and issue.factory for issue in found)
+
+
+@pytest.mark.parametrize(
+    "parameters, return_annotation",
+    [
+        ("first, second: MissingDependency", " -> (1 / 0)"),
+        ("first: (1 / 0), second: MissingDependency", ""),
+    ],
+    ids=["return", "parameter"],
+)
+def test_lazy_failing_annotation_expression_is_invalid_signature(
+    parameters: str, return_annotation: str
+) -> None:
+    import sys
+
+    if sys.version_info < (3, 14):
+        pytest.skip("lazy annotations require Python 3.14")
+
+    calls: list[str] = []
+    namespace: dict[str, Any] = {"__name__": "lazy_factory", "calls": calls}
+    exec(
+        f"def factory({parameters}){return_annotation}: calls.append('called')",
+        namespace,
+    )
+    module = Module("failing_annotations")
+    module.provide(A, scope=Scope.APPLICATION)(namespace["factory"])
+    with pytest.raises(ValidationError) as error:
+        Application("app").include(module).validate()
+    assert [
+        (issue.code, issue.module, issue.factory, issue.parameter)
+        for issue in error.value.issues
+    ] == [("invalid_signature", "failing_annotations", "lazy_factory.factory", None)]
+    assert "ZeroDivisionError" in str(error.value)
+    assert "Traceback" not in str(error.value)
+    assert calls == []
+
+
+def test_lazy_function_local_concrete_token_annotation() -> None:
+    import sys
+
+    if sys.version_info < (3, 14):
+        pytest.skip("lazy annotations require Python 3.14")
+
+    class LocalToken:
+        pass
+
+    def factory(dependency: LocalToken) -> B:
+        raise AssertionError("validation must not invoke the factory")
+
+    module = Module("local_token")
+    module.provide(LocalToken, scope=Scope.APPLICATION)(lambda: None)
+    module.provide(B, scope=Scope.APPLICATION)(factory)
+    Application("app").include(module).validate()

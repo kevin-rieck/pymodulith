@@ -55,6 +55,13 @@ not Python source imports or runtime protocol conformance. Diagnostic codes are
 `invalid_signature`, `unsupported_parameter`, `missing_annotation`,
 `unresolved_annotation`, and `unsupported_annotation`.
 
+On Python 3.14, ordinary unresolved names in lazy annotations are reported per
+parameter, while unresolved return names are ignored. However, if an annotation
+expression raises a non-name exception during standard-library signature
+inspection, validation reports `invalid_signature` for the factory; individual
+parameter diagnostics may be unavailable. This also applies to return expressions,
+even though return annotations are not used for injection.
+
 ## Setup
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then:

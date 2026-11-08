@@ -117,8 +117,8 @@ Module edges represent declared requirements, including unused permissions.
   machine-readable codes, module/provider/parameter locations where applicable,
   qualified token labels, and full cycle paths. Aggregate independent errors
   deterministically; unsupported or unresolved signatures and annotations must
-  produce diagnostics with factory and parameter context, not raw reflection
-  tracebacks. Labels aid diagnosis; they are not token identity.
+  produce diagnostics with factory and, where available, parameter context,
+  not raw reflection tracebacks. Labels aid diagnosis; they are not token identity.
 - A successful `validate()` compiles and caches an inspectable immutable snapshot
   of module and export metadata, resolved dependency keys, ordered arguments,
   provider/module orders, and lifespan plans. Repeated validation returns the
@@ -147,10 +147,16 @@ Reject missing or unresolvable parameter annotations, positional-only or
 variadic parameters, and parameters with defaults (including annotated ones):
 there is no default-value injection. Reject `Any`, type variables, unions,
 `Annotated` qualifiers, parameterized generics and other non-class typing
-forms as dependency tokens. Report each unsupported form as a structured
-validation diagnostic identifying the factory and parameter. There is no
-implicit qualifier, generic resolution, inferred `requires`, or automatic
-module/provider discovery in M1.
+forms as dependency tokens. Report each unsupported form that can be inspected
+as a structured validation diagnostic identifying the factory and parameter.
+On Python 3.14, ordinary unresolved names in lazy annotations are reported per
+parameter, and unresolved return names are ignored. If an annotation expression
+raises a non-name exception during standard-library signature inspection,
+validation instead reports `invalid_signature` for the factory, potentially
+preventing individual parameter diagnostics. This includes return expressions,
+even though return annotations are not used for injection. There is no implicit
+qualifier, generic resolution, inferred `requires`, or automatic module/provider
+discovery in M1.
 
 ## Scope and lifecycle ownership
 
