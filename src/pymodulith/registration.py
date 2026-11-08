@@ -121,6 +121,12 @@ class Application:
     def modules(self) -> tuple[Module, ...]:
         return tuple(self._modules)
 
+    def validate(self) -> None:
+        """Validate the declared graph without invoking factories or freezing it."""
+        from .validation import validate
+
+        validate(self.modules)
+
     def include(self, *modules: Module) -> "Application":
         names = {module.name for module in self._modules}
         for module in modules:

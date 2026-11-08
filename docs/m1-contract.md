@@ -1,14 +1,14 @@
 # M1 implementation contract
 
-**Status: registration implemented; graph validation and runtime planned.**
-This is the reviewable contract for the M1 composition kernel, not documentation
-of a working runtime. The current registration API is described in the
-[README](../README.md). Python **>=3.13** remains the baseline.
+**Status: registration and declared-graph validation implemented; compiled plans
+and runtime planned.** This is the reviewable contract for the M1 composition
+kernel, not documentation of a working runtime. The current API is described
+in the [README](../README.md). Python **>=3.13** remains the baseline.
 
 ## Target API
 
 The following is a design example of the full planned API, not runnable against
-the current registration-only package.
+the current package.
 Registration belongs at the composition boundary; the business classes and
 contract need no framework imports, decorators, or base classes.
 
@@ -86,7 +86,12 @@ Application lifespan and operation are async context managers;
 `Operation.get(type[T]) -> T` is awaited. Graph validation raises the public
 `ValidationError`, importable from `pymodulith`, with an `issues` collection
 of structured diagnostics as described below. Exact compiled plan types and
-serialization are not public commitments here.
+serialization are not public commitments here. Currently `validate()` returns
+`None` on success and does not compile, cache, or freeze declarations. Each
+`ValidationIssue` exposes `code`, `message`, `module`, `provider`, `parameter`,
+`token`, `path`, and `factory` (where applicable); token and factory labels are
+qualified names. Cycle paths follow dependency edges and repeat the first node.
+Module edges represent declared requirements, including unused permissions.
 
 ## Declarations and validation
 
@@ -112,8 +117,8 @@ serialization are not public commitments here.
   machine-readable codes, module/provider/parameter locations where applicable,
   qualified token labels, and full cycle paths. Aggregate independent errors
   deterministically; unsupported or unresolved signatures and annotations must
-  produce diagnostics with factory and parameter context, not raw reflection
-  tracebacks. Labels aid diagnosis; they are not token identity.
+  produce diagnostics with factory and, where available, parameter context,
+  not raw reflection tracebacks. Labels aid diagnosis; they are not token identity.
 - A successful `validate()` compiles and caches an inspectable immutable snapshot
   of module and export metadata, resolved dependency keys, ordered arguments,
   provider/module orders, and lifespan plans. Repeated validation returns the
@@ -142,10 +147,16 @@ Reject missing or unresolvable parameter annotations, positional-only or
 variadic parameters, and parameters with defaults (including annotated ones):
 there is no default-value injection. Reject `Any`, type variables, unions,
 `Annotated` qualifiers, parameterized generics and other non-class typing
-forms as dependency tokens. Report each unsupported form as a structured
-validation diagnostic identifying the factory and parameter. There is no
-implicit qualifier, generic resolution, inferred `requires`, or automatic
-module/provider discovery in M1.
+forms as dependency tokens. Report each unsupported form that can be inspected
+as a structured validation diagnostic identifying the factory and parameter.
+On Python 3.14, ordinary unresolved names in lazy annotations are reported per
+parameter, and unresolved return names are ignored. If an annotation expression
+raises a non-name exception during standard-library signature inspection,
+validation instead reports `invalid_signature` for the factory, potentially
+preventing individual parameter diagnostics. This includes return expressions,
+even though return annotations are not used for injection. There is no implicit
+qualifier, generic resolution, inferred `requires`, or automatic module/provider
+discovery in M1.
 
 ## Scope and lifecycle ownership
 
@@ -179,7 +190,7 @@ module/provider discovery in M1.
 ## Requirement-to-test checklist
 
 These are acceptance targets for the complete M1 implementation, **not passing
-claims about the current registration-only package**. A fresh composition is used
+claims about the current package**. A fresh composition is used
 for a replacement or fake; no mutation of a compiled application or global
 override is assumed.
 
