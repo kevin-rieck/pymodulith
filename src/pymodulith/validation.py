@@ -56,7 +56,28 @@ def _dependencies(
         localns = None
         if inspect.isclass(target):
             localns = dict(vars(target))
-            target = target.__init__
+            call = inspect.unwrap(type(target).__call__)
+            methods = {
+                name: inspect.unwrap(getattr(target, name))
+                for name in ("__new__", "__init__")
+            }
+            if inspect.isfunction(call):
+                target = call
+            else:
+                for base in target.__mro__:
+                    method = next(
+                        (
+                            methods[name]
+                            for name in ("__new__", "__init__")
+                            if name in vars(base) and inspect.isfunction(methods[name])
+                        ),
+                        None,
+                    )
+                    if method is not None:
+                        target = method
+                        break
+                else:
+                    target = methods["__init__"]
         elif not inspect.isfunction(target) and not inspect.ismethod(target):
             localns = dict(vars(type(target)))
             target = target.__call__

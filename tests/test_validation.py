@@ -443,3 +443,79 @@ def test_cycle_detection_handles_deep_and_branching_acyclic_graphs() -> None:
     assert _cycles(chain) == [(*range(1200), 0)]
     branching = [{index + 1, index + 2} for index in range(45)] + [set(), set()]
     assert _cycles(branching) == []
+
+
+class ConstructorDependency:
+    pass
+
+
+class NewConstructor:
+    def __new__(cls, dependency: "ConstructorDependency"):
+        raise AssertionError("validation must not instantiate the class")
+
+
+class InitConstructor:
+    def __init__(self, dependency: "ConstructorDependency") -> None:
+        raise AssertionError("validation must not instantiate the class")
+
+
+@pytest.mark.parametrize("factory", [NewConstructor, InitConstructor])
+def test_class_constructor_forward_reference(factory: type) -> None:
+    module = Module("constructors")
+    module.provide(ConstructorDependency, scope=Scope.APPLICATION)(
+        ConstructorDependency
+    )
+    module.provide(factory, scope=Scope.APPLICATION)(factory)
+    Application("app").include(module).validate()
+
+
+@pytest.mark.parametrize("child_method", ["__new__", "__init__"])
+def test_constructor_signature_uses_closest_method_namespace(child_method: str) -> None:
+    from types import ModuleType
+
+    base_module = ModuleType("base_constructor")
+    child_module = ModuleType("child_constructor")
+    vars(base_module)["Dependency"] = A
+    vars(child_module)["Dependency"] = B
+    base_method = "__init__" if child_method == "__new__" else "__new__"
+    exec(
+        f"class Base:\n    def {base_method}(self, dependency: 'Dependency'): pass",
+        vars(base_module),
+    )
+    vars(child_module)["Base"] = vars(base_module)["Base"]
+    exec(
+        "class Child(Base):\n"
+        f"    def {child_method}(self, dependency: 'Dependency'): pass",
+        vars(child_module),
+    )
+    module = Module("constructors")
+    module.provide(B, scope=Scope.APPLICATION)(B)
+    module.provide(vars(child_module)["Child"], scope=Scope.APPLICATION)(
+        vars(child_module)["Child"]
+    )
+    Application("app").include(module).validate()
+
+
+def test_class_metaclass_call_uses_its_signature_namespace() -> None:
+    from types import ModuleType
+
+    meta_module = ModuleType("constructor_meta")
+    class_module = ModuleType("constructor_class")
+    vars(meta_module)["Dependency"] = B
+    vars(class_module)["Dependency"] = A
+    exec(
+        "class Meta(type):\n    def __call__(cls, dependency: 'Dependency'): pass",
+        vars(meta_module),
+    )
+    vars(class_module)["Meta"] = vars(meta_module)["Meta"]
+    exec(
+        "class Constructed(metaclass=Meta):\n"
+        "    def __init__(self, dependency: 'Dependency'): pass",
+        vars(class_module),
+    )
+    module = Module("constructors")
+    module.provide(B, scope=Scope.APPLICATION)(B)
+    module.provide(vars(class_module)["Constructed"], scope=Scope.APPLICATION)(
+        vars(class_module)["Constructed"]
+    )
+    Application("app").include(module).validate()
