@@ -53,9 +53,9 @@ def _dependencies(
         target = inspect.unwrap(factory)
         while isinstance(target, partial):
             target = inspect.unwrap(target.func)
-        localns = None
+        localns_class = None
         if inspect.isclass(target):
-            localns = dict(vars(target))
+            localns_class = target
             call = inspect.unwrap(type(target).__call__)
             methods = {
                 name: inspect.unwrap(getattr(target, name))
@@ -79,8 +79,13 @@ def _dependencies(
                 else:
                     target = methods["__init__"]
         elif not inspect.isfunction(target) and not inspect.ismethod(target):
-            localns = dict(vars(type(target)))
+            localns_class = type(target)
             target = inspect.unwrap(target.__call__)
+        localns = None
+        if localns_class is not None:
+            localns = {}
+            for base in reversed(localns_class.__mro__):
+                localns.update(vars(base))
         globalns = getattr(target, "__globals__", {})
     except Exception as exc:
         issues.append(

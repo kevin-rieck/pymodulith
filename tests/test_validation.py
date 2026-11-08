@@ -390,6 +390,29 @@ def test_forward_references_in_callable_and_partial_factories() -> None:
     Application("app").include(module).validate()
 
 
+@pytest.mark.parametrize("override", [False, True])
+def test_inherited_callable_factory_annotation_namespace(override: bool) -> None:
+    class Base:
+        Alias = A
+
+        def __call__(self, dependency: "Alias") -> None:
+            raise AssertionError("validation must not invoke the factory")
+
+    class Other:
+        Alias = B
+
+    class Child(Base, Other):
+        pass
+
+    class Override(Child):
+        Alias = B
+
+    module = Module("callables")
+    module.provide(B if override else A, scope=Scope.APPLICATION)(lambda: None)
+    module.provide(C, scope=Scope.APPLICATION)(Override() if override else Child())
+    Application("app").include(module).validate()
+
+
 def test_successful_validation_does_not_freeze_or_cache() -> None:
     module = Module("mutable")
     app = Application("app").include(module)
@@ -465,6 +488,30 @@ def test_class_constructor_forward_reference(factory: type) -> None:
     module.provide(ConstructorDependency, scope=Scope.APPLICATION)(
         ConstructorDependency
     )
+    module.provide(factory, scope=Scope.APPLICATION)(factory)
+    Application("app").include(module).validate()
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_inherited_constructor_annotation_namespace(override: bool) -> None:
+    class Base:
+        Alias = A
+
+        def __init__(self, dependency: "Alias") -> None:
+            raise AssertionError("validation must not instantiate the class")
+
+    class Other:
+        Alias = B
+
+    class Child(Base, Other):
+        pass
+
+    class Override(Child):
+        Alias = B
+
+    factory = Override if override else Child
+    module = Module("constructors")
+    module.provide(B if override else A, scope=Scope.APPLICATION)(lambda: None)
     module.provide(factory, scope=Scope.APPLICATION)(factory)
     Application("app").include(module).validate()
 
