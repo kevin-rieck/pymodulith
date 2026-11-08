@@ -1,14 +1,14 @@
 # M1 implementation contract
 
-**Status: planned, not implemented.** This is the reviewable contract for the
-M1 composition kernel, not documentation of a working runtime. Today the
-package contains only `hello()` and its placeholder test. Both are disposable
-scaffold API and must be removed together when real public exports land; retain
-both until then. Python **>=3.13** remains the baseline.
+**Status: registration implemented; graph validation and runtime planned.**
+This is the reviewable contract for the M1 composition kernel, not documentation
+of a working runtime. The current registration API is described in the
+[README](../README.md). Python **>=3.13** remains the baseline.
 
 ## Target API
 
-The following is a design example, not runnable against the current package.
+The following is a design example of the full planned API, not runnable against
+the current registration-only package.
 Registration belongs at the composition boundary; the business classes and
 contract need no framework imports, decorators, or base classes.
 
@@ -178,9 +178,10 @@ module/provider discovery in M1.
 
 ## Requirement-to-test checklist
 
-These are acceptance targets for subsequent M1 implementation, **not passing
-claims about the scaffold**. A fresh composition is used for a replacement or
-fake; no mutation of a compiled application or global override is assumed.
+These are acceptance targets for the complete M1 implementation, **not passing
+claims about the current registration-only package**. A fresh composition is used
+for a replacement or fake; no mutation of a compiled application or global
+override is assumed.
 
 - [ ] **Ownership and identity:** reject duplicate exported contracts, invalid
   registration and duplicate module names/local providers; same-named distinct
