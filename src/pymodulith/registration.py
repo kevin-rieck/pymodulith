@@ -149,36 +149,53 @@ class Application:
 
     @asynccontextmanager
     async def lifespan(self) -> AsyncGenerator[None]:
-        """Open a fresh application scope for serial resolution."""
-        from .runtime import _Runtime
+        """Start a fresh application scope and drain it before shutdown."""
+        from .runtime import _finish, _Runtime
 
         if self._runtime is not None:
             raise RuntimeError("application lifespan is already active")
         runtime = _Runtime(self.validate())
         self._runtime = runtime
+        error: BaseException | None = None
         try:
-            async with runtime.stack:
-                try:
-                    yield
-                finally:
-                    runtime.active = False
+            try:
+                await runtime.start()
+                yield
+            except BaseException as exc:
+                error = exc
+            runtime.state = "draining" if runtime.state == "ready" else "failed"
+            await _finish(runtime.shutdown(error), error)
         finally:
+            runtime.cache.clear()
+            runtime.state = "stopped"
             self._runtime = None
 
     @asynccontextmanager
     async def operation(self) -> AsyncGenerator["Operation"]:
         """Open an operation within the current application lifespan."""
-        from .runtime import Operation
+        from .runtime import Operation, _finish
 
         runtime = self._runtime
-        if runtime is None or not runtime.active:
-            raise RuntimeError("application lifespan is not active")
+        if runtime is None or runtime.state != "ready":
+            state = runtime.state if runtime is not None else "stopped"
+            raise RuntimeError(f"application lifespan is not active (state: {state})")
+        runtime.operations += 1
+        runtime.drained.clear()
         operation = Operation(runtime)
-        async with operation._stack:
+        error: BaseException | None = None
+        try:
             try:
                 yield operation
-            finally:
-                operation._active = False
+            except BaseException as exc:
+                error = exc
+            operation._active = False
+            await _finish(operation._stack.close(error), error)
+        finally:
+            operation._active = False
+            operation._cache.clear()
+            runtime.operations -= 1
+            if runtime.operations == 0:
+                runtime.drained.set()
 
     def include(self, *modules: Module) -> "Application":
         if self._plan is not None:

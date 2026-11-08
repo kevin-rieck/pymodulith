@@ -1,8 +1,8 @@
 # pymodulith
 
 Explicit typed composition metadata, declared-graph validation, immutable
-compiled plans and serial scoped resolution for Python 3.13+. Lifecycle and
-concurrency safety remain incomplete. See the
+compiled plans, lifecycle management and serial scoped resolution for Python
+3.13+. Concurrent provider initialization remains incomplete. See the
 [M1 implementation contract](docs/m1-contract.md) and the
 [backend decision and reproducible comparison](docs/adrs/0001-runtime-backend.md).
 
@@ -39,21 +39,40 @@ async def main() -> int:
             return stock.available()
 ```
 
-Resolution is lazy and uses compiled arguments. Each lifespan has a fresh
-application cache; each operation has its own cache and resource teardown.
-Only exported tokens may be requested. Explicit resources are entered and
-closed in reverse acquisition order; context-manager-shaped ordinary values
-are not entered. A failed resolution unwinds operation resources acquired by
-that attempt. Retained operations cannot resolve after exit.
+Each lifespan eagerly initializes every application provider in compiled
+dependency order, then enters module hooks in module dependency order. Only
+successful resource and hook entries are closed, in reverse acquisition order,
+including after startup failure. Each lifespan has a fresh application cache;
+each operation has its own cache and lazily resolved providers. Only exported
+tokens may be requested. Context-manager-shaped ordinary values are not
+entered. A failed resolution unwinds resources acquired by that attempt.
+Retained operations cannot resolve after exit.
 
-This is a limited serial executor, not a lifecycle-safe or concurrency-safe
-runtime. Module lifespan hooks are validated but **not executed**, application
-providers are not eagerly initialized, and shutdown does not drain operations.
-Do not resolve concurrently in the same scope (including application providers
-shared by concurrent operations), exit a scope while work is active, or share
-scopes across threads or event loops. Cancellation and cleanup failure behavior
-has not passed the lifecycle/concurrency gates. Issues #7 and #8 own those
-capabilities; #10 owns comprehensive no-reflection and performance evidence.
+Only a ready application admits operations. Shutdown rejects new operations,
+waits for admitted operations through resource cleanup, then closes hooks and
+application resources. Overlapping lifespans are rejected; restart after stop or
+failure reuses the compiled plan but creates fresh instances. Business and
+startup errors are preserved alongside cleanup failures, including when a
+resource would suppress them.
+
+The host owns timeouts and cancellation policy; there is no runtime timeout.
+Cancellation during startup rolls back successful entries. Cancellation while
+draining is recorded, but application resources are not closed until all
+admitted operations finish cleanup. Exits run in the calling task; cancellation
+can interrupt an individual resource's exit, after which remaining exits are
+still attempted. The host must allow drain and cleanup to finish rather than
+force-cancelling or repeatedly cancelling shutdown. An interrupted exit cannot
+be guaranteed to release its own resources, and a stuck operation can delay
+drain indefinitely. A resource whose own entry fails or is cancelled must clean
+up its partially acquired state itself. Abrupt process termination cannot
+guarantee cleanup.
+
+This remains a limited serial executor, not a concurrency-safe resolver. Do not
+resolve concurrently in the same scope, leave an operation while its `get`
+calls are still running, or share scopes across threads or event loops. Enter and
+exit task-affine resources in the same task. Independent operations may overlap,
+but issue #8 owns per-key initialization, cancellation ownership, and cross-loop
+safeguards. Issue #10 owns comprehensive no-reflection and performance evidence.
 
 Tokens are classes or protocols, compared by identity. Providers are private
 unless `export=True`; modules declare permitted external tokens with

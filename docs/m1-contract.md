@@ -1,17 +1,16 @@
 # M1 implementation contract
 
-**Status: registration, validation, compiled plans and limited serial scoped
-resolution implemented; lifecycle and concurrency safety incomplete.** This is
+**Status: registration, validation, compiled plans, lifecycle and limited serial
+scoped resolution implemented; concurrent resolution remains incomplete.** This is
 the reviewable contract for the full M1 composition kernel, not a claim that
 all runtime gates have passed. The current API and its limitations are described
 in the [README](../README.md). Python **>=3.13** remains the baseline.
 
 ## Target API
 
-The following illustrates the full target API. Module lifespan hooks are not
-yet executed by the current scoped executor.
-Registration belongs at the composition boundary; the business classes and
-contract need no framework imports, decorators, or base classes.
+The following illustrates the full target API. Registration belongs at the
+composition boundary; the business classes and contract need no framework
+imports, decorators, or base classes.
 
 ```python
 from contextlib import asynccontextmanager
@@ -184,7 +183,16 @@ discovery in M1.
   resources. The host owns timeouts and cancellation policy. Overlapping or
   nested lifespans of one application are rejected. Restart after normal stop
   or failure reuses the compiled plan, not old instances. Retained operations
-  cannot resolve after exit.
+  cannot resolve after exit. Cancellation during startup rolls back successful
+  entries. Cancellation during drain is recorded while waiting for all admitted
+  operations. Exits run in the caller's task; cancellation may interrupt an
+  individual exit, but the remaining exits are attempted. The host must allow
+  drain and cleanup to complete rather than force-cancelling or repeatedly
+  cancelling shutdown; an interrupted exit cannot be guaranteed to release its
+  resources. A stuck operation can delay drain indefinitely. Entry code owns
+  cleanup of partially acquired state if its own entry fails or is cancelled.
+  Business/startup errors and all cleanup failures remain observable even if a
+  resource attempts to suppress an error.
 - Concurrent resolution must initialize a provider once per scope without a
   global lock held across arbitrary awaited user code. Cancellation of a waiter
   must not corrupt shared initialization or leak resources. Initialization
