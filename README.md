@@ -1,8 +1,8 @@
 # pymodulith
 
-Explicit typed composition metadata for Python 3.13+. Registration is available
-now; graph validation, dependency resolution and lifecycle runtime are planned,
-not yet implemented. See the [M1 implementation contract](docs/m1-contract.md).
+Explicit typed composition metadata and declared-graph validation for Python
+3.13+. Dependency resolution and lifecycle runtime are planned, not yet
+implemented. See the [M1 implementation contract](docs/m1-contract.md).
 
 ```python
 from typing import Protocol
@@ -42,6 +42,18 @@ tuple views. Each frozen `Provider` records its `token`, `factory`, `scope`,
 `export` flag and `kind` (`"value"` or `"resource"`); a module's optional hook
 is available as `lifespan_factory`. Later registrations are reflected in new
 views. No graph checks or runtime instances are created by registration.
+
+`app.validate()` inspects declarations without invoking factories or entering
+resources. It raises `ValidationError` (distinct from `RegistrationError`),
+whose `issues` tuple contains public `ValidationIssue` diagnostics with stable
+codes and locations. Successful validation currently returns `None`: it does
+not compile, cache or freeze a plan. Validation checks declared dependencies,
+not Python source imports or runtime protocol conformance. Diagnostic codes are
+`missing_export`, `duplicate_export`, `self_requirement`,
+`redundant_requirement`, `undeclared_dependency`, `self_dependency`,
+`provider_cycle`, `module_cycle`, `invalid_scope`, `invalid_lifespan_scope`,
+`invalid_signature`, `unsupported_parameter`, `missing_annotation`,
+`unresolved_annotation`, and `unsupported_annotation`.
 
 ## Setup
 

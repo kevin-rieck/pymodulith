@@ -1,14 +1,14 @@
 # M1 implementation contract
 
-**Status: registration implemented; graph validation and runtime planned.**
-This is the reviewable contract for the M1 composition kernel, not documentation
-of a working runtime. The current registration API is described in the
-[README](../README.md). Python **>=3.13** remains the baseline.
+**Status: registration and declared-graph validation implemented; compiled plans
+and runtime planned.** This is the reviewable contract for the M1 composition
+kernel, not documentation of a working runtime. The current API is described
+in the [README](../README.md). Python **>=3.13** remains the baseline.
 
 ## Target API
 
 The following is a design example of the full planned API, not runnable against
-the current registration-only package.
+the current package.
 Registration belongs at the composition boundary; the business classes and
 contract need no framework imports, decorators, or base classes.
 
@@ -86,7 +86,12 @@ Application lifespan and operation are async context managers;
 `Operation.get(type[T]) -> T` is awaited. Graph validation raises the public
 `ValidationError`, importable from `pymodulith`, with an `issues` collection
 of structured diagnostics as described below. Exact compiled plan types and
-serialization are not public commitments here.
+serialization are not public commitments here. Currently `validate()` returns
+`None` on success and does not compile, cache, or freeze declarations. Each
+`ValidationIssue` exposes `code`, `message`, `module`, `provider`, `parameter`,
+`token`, `path`, and `factory` (where applicable); token and factory labels are
+qualified names. Cycle paths follow dependency edges and repeat the first node.
+Module edges represent declared requirements, including unused permissions.
 
 ## Declarations and validation
 
@@ -179,7 +184,7 @@ module/provider discovery in M1.
 ## Requirement-to-test checklist
 
 These are acceptance targets for the complete M1 implementation, **not passing
-claims about the current registration-only package**. A fresh composition is used
+claims about the current package**. A fresh composition is used
 for a replacement or fake; no mutation of a compiled application or global
 override is assumed.
 

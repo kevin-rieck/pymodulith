@@ -1,0 +1,445 @@
+import inspect
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager, contextmanager
+from typing import Annotated, Any, Protocol, TypeVar
+
+import pytest
+
+from pymodulith import (
+    Application,
+    Module,
+    RegistrationError,
+    Scope,
+    ValidationError,
+    ValidationIssue,
+)
+
+
+class A:
+    pass
+
+
+class B:
+    pass
+
+
+class C:
+    pass
+
+
+class Contract(Protocol):
+    def run(self) -> None: ...
+
+
+def issues(*modules: Module) -> tuple[ValidationIssue, ...]:
+    with pytest.raises(ValidationError) as error:
+        Application("app").include(*modules).validate()
+    return error.value.issues
+
+
+def test_valid_graph_is_order_independent_and_cold() -> None:
+    calls: list[str] = []
+    owner = Module("owner")
+    consumer = Module("consumer", requires=[Contract])
+
+    @owner.provide(Contract, scope=Scope.APPLICATION, export=True)
+    async def value() -> "NonexistentReturn":  # noqa: F821  # ty: ignore[unresolved-reference]
+        calls.append("value")
+        raise AssertionError
+
+    @owner.resource(A, scope=Scope.APPLICATION)
+    @contextmanager
+    def resource(contract: "Contract") -> Generator[A]:
+        calls.append("resource")
+        yield A()
+
+    @consumer.resource(B, scope=Scope.OPERATION, export=True)
+    @asynccontextmanager
+    async def async_resource(contract: Contract) -> AsyncGenerator[B]:
+        calls.append("async resource")
+        yield B()
+
+    @consumer.lifespan
+    @asynccontextmanager
+    async def lifespan(*, contract: Contract) -> AsyncGenerator[None]:
+        calls.append("lifespan")
+        yield
+
+    assert owner.providers[0].factory is value
+    assert owner.providers[1].factory is resource
+    assert consumer.providers[0].factory is async_resource
+    assert consumer.lifespan_factory is lifespan
+    assert Application("one").include(owner, consumer).validate() is None
+    assert Application("two").include(consumer, owner).validate() is None
+    assert calls == []
+
+
+def test_local_precedence_and_unused_requirements() -> None:
+    owner, consumer = Module("owner"), Module("consumer", requires=[B])
+    owner.provide(B, scope=Scope.APPLICATION, export=True)(lambda: None)
+    consumer.provide(A, scope=Scope.APPLICATION)(lambda: None)
+
+    @consumer.provide(C, scope=Scope.APPLICATION)
+    def factory(a: A) -> None:
+        pass
+
+    Application("app").include(consumer, owner).validate()
+
+
+@pytest.mark.parametrize(
+    "case, expected",
+    [
+        ("missing", "missing_export"),
+        ("duplicate", "duplicate_export"),
+        ("self", "self_requirement"),
+        ("private_redundant", "redundant_requirement"),
+        ("repeated", "redundant_requirement"),
+        ("undeclared", "undeclared_dependency"),
+        ("private_external", "undeclared_dependency"),
+        ("provider_self", "self_dependency"),
+    ],
+)
+def test_graph_defects(case: str, expected: str) -> None:
+    owner = Module("owner")
+    consumer = Module(
+        "consumer",
+        requires=[A]
+        if case in {"missing", "self", "private_redundant", "repeated"}
+        else [],
+    )
+    if case == "duplicate":
+        owner.provide(A, scope=Scope.APPLICATION, export=True)(lambda: None)
+        consumer.provide(A, scope=Scope.APPLICATION, export=True)(lambda: None)
+    if case in {"self", "private_redundant"}:
+        consumer.provide(A, scope=Scope.APPLICATION, export=case == "self")(
+            lambda: None
+        )
+    if case == "repeated":
+        consumer = Module("consumer", requires=[A, A])
+        owner.provide(A, scope=Scope.APPLICATION, export=True)(lambda: None)
+    if case == "private_external":
+        owner.provide(A, scope=Scope.APPLICATION)(lambda: None)
+    if case in {"undeclared", "private_external", "provider_self"}:
+
+        def factory(a: A) -> None:
+            pass
+
+        consumer.provide(A if case == "provider_self" else B, scope=Scope.APPLICATION)(
+            factory
+        )
+    found = issues(owner, consumer)
+    assert expected in [issue.code for issue in found]
+    assert all(issue.message for issue in found)
+    assert all(isinstance(issue, ValidationIssue) for issue in found)
+
+
+def test_identity_even_for_unhashable_equal_and_same_named_tokens() -> None:
+    class Equal(type):
+        def __eq__(cls, other: object) -> bool:
+            return True
+
+        __hash__ = None  # type: ignore[assignment]
+
+    first = Equal("Token", (), {"__module__": "same"})
+    second = Equal("Token", (), {"__module__": "same"})
+    owner, consumer = Module("owner"), Module("consumer", requires=[first, second])
+    owner.provide(first, scope=Scope.APPLICATION, export=True)(lambda: None)
+    found = issues(owner, consumer)
+    assert [issue.code for issue in found] == ["missing_export"]
+    assert found[0].token == "same.Token"
+    owner.provide(second, scope=Scope.APPLICATION, export=True)(lambda: None)
+    Application("app").include(owner, consumer).validate()
+
+
+def test_cycles_and_independent_defects_are_deterministic() -> None:
+    left = Module("left", requires=[B])
+    right = Module("right", requires=[C])
+    third = Module("third", requires=[A])
+    broken = Module("broken", requires=[str])
+
+    @left.provide(A, scope=Scope.APPLICATION, export=True)
+    def a(b: B) -> None:
+        pass
+
+    @right.provide(B, scope=Scope.APPLICATION, export=True)
+    def b(c: C) -> None:
+        pass
+
+    @third.provide(C, scope=Scope.APPLICATION, export=True)
+    def c(a: A) -> None:
+        pass
+
+    found = issues(left, right, third, broken)
+    assert found == issues(broken, third, left, right)
+    assert [issue.code for issue in found] == [
+        "missing_export",
+        "module_cycle",
+        "provider_cycle",
+    ]
+    assert found[1].path == ("left", "right", "third", "left")
+    assert found[2].path == tuple(
+        f"{module}:test_validation.{token}"
+        for module, token in [
+            ("left", "A"),
+            ("right", "B"),
+            ("third", "C"),
+            ("left", "A"),
+        ]
+    )
+
+
+def test_direct_and_transitive_scope_edges_and_lifespan() -> None:
+    module = Module("scope")
+    module.provide(C, scope=Scope.OPERATION)(lambda: None)
+
+    @module.provide(B, scope=Scope.APPLICATION)
+    def b(c: C) -> None:
+        pass
+
+    @module.provide(A, scope=Scope.APPLICATION)
+    def a(b: B) -> None:
+        pass
+
+    @module.lifespan
+    def lifespan(c: C) -> None:
+        pass
+
+    found = issues(module)
+    assert [issue.code for issue in found] == [
+        "invalid_lifespan_scope",
+        "invalid_scope",
+        "invalid_scope",
+    ]
+    assert found[0].parameter == "c"
+    assert any(len(issue.path) == 3 for issue in found if issue.code == "invalid_scope")
+
+
+T = TypeVar("T")
+
+
+@pytest.mark.parametrize(
+    "annotation, expected",
+    [
+        (None, "missing_annotation"),
+        ("DoesNotExist", "unresolved_annotation"),
+        (Any, "unsupported_annotation"),
+        (T, "unsupported_annotation"),
+        (A | B, "unsupported_annotation"),
+        (Annotated[A, "qualifier"], "unsupported_annotation"),
+        (list[A], "unsupported_annotation"),
+    ],
+)
+def test_invalid_annotations(annotation: object, expected: str) -> None:
+    module = Module("annotations")
+
+    def factory(dependency):
+        pass
+
+    if annotation is not None:
+        factory.__annotations__["dependency"] = annotation
+    module.provide(A, scope=Scope.APPLICATION)(factory)
+    found = issues(module)
+    assert len(found) == 1
+    assert (found[0].code, found[0].module, found[0].parameter) == (
+        expected,
+        "annotations",
+        "dependency",
+    )
+    assert found[0].provider and found[0].provider.endswith(".A")
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda dependency, /: None,
+        lambda *dependency: None,
+        lambda **dependency: None,
+        lambda dependency=None: None,
+    ],
+)
+def test_unsupported_parameters(factory: Any) -> None:
+    module = Module("parameters")
+    module.provide(A, scope=Scope.APPLICATION)(factory)
+    found = issues(module)
+    assert [(issue.code, issue.parameter) for issue in found] == [
+        ("unsupported_parameter", "dependency")
+    ]
+
+
+def test_invalid_signature_and_independent_parameter_failures() -> None:
+    class BadSignature:
+        @property
+        def __signature__(self) -> Any:
+            raise RuntimeError("private detail")
+
+        def __call__(self) -> None:
+            pass
+
+    module = Module("bad")
+    module.provide(A, scope=Scope.APPLICATION)(BadSignature())
+
+    def bad(first, second: "NotFound") -> None:  # noqa: F821  # ty: ignore[unresolved-reference]
+        pass
+
+    module.provide(B, scope=Scope.APPLICATION)(bad)
+    found = issues(module)
+    assert [issue.code for issue in found] == [
+        "invalid_signature",
+        "missing_annotation",
+        "unresolved_annotation",
+    ]
+    assert "private detail" not in str(found)
+    assert not issubclass(ValidationError, RegistrationError)
+
+
+def test_local_provider_takes_precedence_over_external_export() -> None:
+    owner, consumer = Module("owner"), Module("consumer")
+    owner.provide(A, scope=Scope.OPERATION, export=True)(lambda: None)
+    consumer.provide(A, scope=Scope.APPLICATION)(lambda: None)
+
+    @consumer.provide(B, scope=Scope.APPLICATION)
+    def factory(a: A) -> None:
+        pass
+
+    Application("app").include(owner, consumer).validate()
+
+
+@pytest.mark.parametrize("kind", ["missing", "unresolved", "default", "operation"])
+def test_invalid_lifespan_dependencies_are_cold(kind: str) -> None:
+    calls: list[str] = []
+    module = Module("hooks")
+    module.provide(A, scope=Scope.OPERATION)(lambda: calls.append("provider"))
+
+    @contextmanager
+    def hook(dependency):
+        calls.append("hook")
+        yield
+
+    original = inspect.unwrap(hook)
+    if kind == "unresolved":
+        original.__annotations__["dependency"] = "Unknown"
+    elif kind == "default":
+        original.__annotations__["dependency"] = A
+        original.__defaults__ = (None,)
+    elif kind == "operation":
+        original.__annotations__["dependency"] = A
+    module.lifespan(hook)
+    found = issues(module)
+    expected = {
+        "missing": "missing_annotation",
+        "unresolved": "unresolved_annotation",
+        "default": "unsupported_parameter",
+        "operation": "invalid_lifespan_scope",
+    }
+    assert [(issue.code, issue.provider, issue.parameter) for issue in found] == [
+        (expected[kind], "lifespan", "dependency")
+    ]
+    if kind != "operation":
+        assert found[0].factory and "hook" in found[0].factory
+    assert calls == []
+
+
+def test_equivalent_declaration_order_and_parameter_locations() -> None:
+    def build(reverse: bool) -> Module:
+        module = Module("module", requires=[str, int] if reverse else [int, str])
+
+        def a(dep: C) -> None:
+            pass
+
+        def b(dep: C) -> None:
+            pass
+
+        declarations = [(A, a), (B, b)]
+        for token, factory in reversed(declarations) if reverse else declarations:
+            module.provide(token, scope=Scope.APPLICATION)(factory)
+        return module
+
+    assert issues(build(False)) == issues(build(True))
+
+
+def test_scope_diagnostics_identify_first_parameter() -> None:
+    module = Module("scope")
+    module.provide(B, scope=Scope.OPERATION)(lambda: None)
+
+    def factory(dependency: B) -> None:
+        pass
+
+    module.provide(A, scope=Scope.APPLICATION)(factory)
+    found = issues(module)
+    assert [(issue.code, issue.parameter) for issue in found] == [
+        ("invalid_scope", "dependency")
+    ]
+
+
+def test_forward_references_in_callable_and_partial_factories() -> None:
+    from functools import partial
+
+    class CallableFactory:
+        Dependency = A
+
+        def __call__(self, dependency: "Dependency") -> B:
+            raise AssertionError
+
+    def factory(unused: int, dependency: "A") -> C:
+        raise AssertionError
+
+    module = Module("callables")
+    module.provide(A, scope=Scope.APPLICATION)(lambda: None)
+    module.provide(B, scope=Scope.APPLICATION)(CallableFactory())
+    module.provide(C, scope=Scope.APPLICATION)(partial(factory, 1))
+    Application("app").include(module).validate()
+
+
+def test_successful_validation_does_not_freeze_or_cache() -> None:
+    module = Module("mutable")
+    app = Application("app").include(module)
+    assert app.validate() is None
+
+    @module.provide(A, scope=Scope.APPLICATION)
+    def invalid(dependency: B) -> None:
+        pass
+
+    with pytest.raises(ValidationError) as error:
+        app.validate()
+    assert error.value.issues[0].code == "undeclared_dependency"
+    module.provide(B, scope=Scope.APPLICATION)(lambda: None)
+    assert app.validate() is None
+
+
+def test_same_label_cycle_paths_are_canonical_across_registration_order() -> None:
+    first = type("Same", (), {"__module__": "tokens"})
+    second = type("Same", (), {"__module__": "tokens"})
+
+    def build(reverse: bool) -> Module:
+        module = Module("module")
+        declarations = [(first, B), (B, second), (second, C), (C, first)]
+        for token, dependency in reversed(declarations) if reverse else declarations:
+
+            def factory(value):
+                pass
+
+            factory.__annotations__["value"] = dependency
+            module.provide(token, scope=Scope.APPLICATION)(factory)
+        return module
+
+    assert issues(build(False)) == issues(build(True))
+    found = issues(build(False))
+    assert [issue.code for issue in found] == ["provider_cycle"]
+    assert found[0].path == (
+        "module:test_validation.B",
+        "module:tokens.Same",
+        "module:test_validation.C",
+        "module:tokens.Same",
+        "module:test_validation.B",
+    )
+
+
+def test_cycle_detection_handles_deep_and_branching_acyclic_graphs() -> None:
+    from pymodulith.validation import _cycles
+
+    chain = [{index + 1} for index in range(1199)] + [set()]
+    assert _cycles(chain) == []
+    chain[-1].add(0)
+    assert _cycles(chain) == [(*range(1200), 0)]
+    branching = [{index + 1, index + 2} for index in range(45)] + [set(), set()]
+    assert _cycles(branching) == []
