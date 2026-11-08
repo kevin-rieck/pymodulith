@@ -1,9 +1,16 @@
 """Typed, declarative composition metadata."""
 
+import asyncio
+import threading
 from collections.abc import AsyncGenerator, Callable, Iterable
-from contextlib import asynccontextmanager
+from contextlib import (
+    AbstractAsyncContextManager,
+    AsyncContextDecorator,
+    asynccontextmanager,
+)
 from dataclasses import dataclass
 from enum import Enum
+from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -121,12 +128,47 @@ class Module:
         return factory
 
 
+class _LoopBoundContext[T](AsyncContextDecorator, AbstractAsyncContextManager[T]):
+    def __init__(self, factory: Callable[[], AbstractAsyncContextManager[T]]) -> None:
+        self.factory = factory
+        self.context = factory()
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.thread: threading.Thread | None = None
+
+    def _recreate_cm(self) -> "_LoopBoundContext[T]":
+        return _LoopBoundContext(self.factory)
+
+    async def __aenter__(self) -> T:
+        value = await self.context.__aenter__()
+        self.loop = asyncio.get_running_loop()
+        self.thread = threading.current_thread()
+        return value
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        if (
+            asyncio.get_running_loop() is not self.loop
+            or threading.current_thread() is not self.thread
+        ):
+            raise RuntimeError(
+                "application scope belongs to a different event loop or thread"
+            )
+        return await self.context.__aexit__(exc_type, exc, traceback)
+
+
 class Application:
     def __init__(self, name: str) -> None:
         self._name = _name(name)
         self._modules: list[Module] = []
         self._plan: CompiledApplication | None = None
         self._runtime: _Runtime | None = None
+        self._owner_loop: asyncio.AbstractEventLoop | None = None
+        self._owner_thread: threading.Thread | None = None
+        self._lifecycle_lock = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -147,35 +189,65 @@ class Application:
             self._plan = plan
         return self._plan
 
-    @asynccontextmanager
-    async def lifespan(self) -> AsyncGenerator[None]:
+    def lifespan(self) -> _LoopBoundContext[None]:
         """Start a fresh application scope and drain it before shutdown."""
+        return _LoopBoundContext(self._lifespan)
+
+    @asynccontextmanager
+    async def _lifespan(self) -> AsyncGenerator[None]:
         from .runtime import _finish, _Runtime
 
-        if self._runtime is not None:
-            raise RuntimeError("application lifespan is already active")
-        runtime = _Runtime(self.validate())
-        self._runtime = runtime
-        error: BaseException | None = None
+        loop = asyncio.get_running_loop()
+        with self._lifecycle_lock:
+            if self._owner_loop is not None:
+                if (
+                    self._owner_loop is not loop
+                    or self._owner_thread is not threading.current_thread()
+                ):
+                    raise RuntimeError(
+                        "application scope belongs to a different event loop or thread"
+                    )
+                raise RuntimeError("application lifespan is already active")
+            self._owner_loop = loop
+            self._owner_thread = threading.current_thread()
         try:
+            runtime = _Runtime(self.validate())
+            self._runtime = runtime
+            error: BaseException | None = None
             try:
-                await runtime.start()
-                yield
-            except BaseException as exc:
-                error = exc
-            runtime.state = "draining" if runtime.state == "ready" else "failed"
-            await _finish(runtime.shutdown(error), error)
+                try:
+                    await runtime.start()
+                    yield
+                except BaseException as exc:
+                    error = exc
+                runtime.state = "draining" if runtime.state == "ready" else "failed"
+                await _finish(runtime.shutdown(error), error)
+            finally:
+                runtime.state = "stopped"
+                self._runtime = None
         finally:
-            runtime.cache.clear()
-            runtime.state = "stopped"
-            self._runtime = None
+            with self._lifecycle_lock:
+                self._owner_loop = None
+                self._owner_thread = None
+
+    def operation(self) -> _LoopBoundContext["Operation"]:
+        """Open an operation within the current application lifespan."""
+        return _LoopBoundContext(self._operation)
 
     @asynccontextmanager
-    async def operation(self) -> AsyncGenerator["Operation"]:
-        """Open an operation within the current application lifespan."""
+    async def _operation(self) -> AsyncGenerator["Operation"]:
         from .runtime import Operation, _finish
 
+        if self._owner_loop is not None and (
+            asyncio.get_running_loop() is not self._owner_loop
+            or threading.current_thread() is not self._owner_thread
+        ):
+            raise RuntimeError(
+                "application scope belongs to a different event loop or thread"
+            )
         runtime = self._runtime
+        if runtime is not None:
+            runtime.check_loop()
         if runtime is None or runtime.state != "ready":
             state = runtime.state if runtime is not None else "stopped"
             raise RuntimeError(f"application lifespan is not active (state: {state})")
@@ -189,10 +261,9 @@ class Application:
             except BaseException as exc:
                 error = exc
             operation._active = False
-            await _finish(operation._stack.close(error), error)
+            await _finish(operation._scope.close(error), error)
         finally:
             operation._active = False
-            operation._cache.clear()
             runtime.operations -= 1
             if runtime.operations == 0:
                 runtime.drained.set()
