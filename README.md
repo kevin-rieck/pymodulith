@@ -3,7 +3,8 @@
 Explicit typed composition metadata, declared-graph validation and immutable
 compiled plans for Python 3.13+. Dependency resolution and lifecycle runtime
 are planned, not yet implemented. See the
-[M1 implementation contract](docs/m1-contract.md).
+[M1 implementation contract](docs/m1-contract.md) and the
+[backend decision and reproducible comparison](docs/adrs/0001-runtime-backend.md).
 
 ```python
 from typing import Protocol
