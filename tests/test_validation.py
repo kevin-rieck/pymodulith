@@ -519,3 +519,37 @@ def test_class_metaclass_call_uses_its_signature_namespace() -> None:
         vars(class_module)["Constructed"]
     )
     Application("app").include(module).validate()
+
+
+@pytest.mark.parametrize("as_lifespan", [False, True])
+@pytest.mark.parametrize("async_factory", [False, True])
+def test_decorated_callable_instance_forward_reference_is_cold(
+    as_lifespan: bool, async_factory: bool
+) -> None:
+    calls: list[str] = []
+
+    class SyncFactory:
+        @contextmanager
+        def __call__(self, dependency: "A") -> Generator[B]:
+            calls.append("entered")
+            yield B()
+
+    class AsyncFactory:
+        @asynccontextmanager
+        async def __call__(self, dependency: "A") -> AsyncGenerator[B]:
+            calls.append("entered")
+            yield B()
+
+    def dependency() -> A:
+        calls.append("dependency")
+        return A()
+
+    module = Module("callable_instances")
+    module.provide(A, scope=Scope.APPLICATION)(dependency)
+    factory = AsyncFactory() if async_factory else SyncFactory()
+    if as_lifespan:
+        assert module.lifespan(factory) is factory
+    else:
+        assert module.resource(B, scope=Scope.APPLICATION)(factory) is factory
+    assert Application("app").include(module).validate() is None
+    assert calls == []

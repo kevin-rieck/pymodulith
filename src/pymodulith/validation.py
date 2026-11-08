@@ -80,7 +80,7 @@ def _dependencies(
                     target = methods["__init__"]
         elif not inspect.isfunction(target) and not inspect.ismethod(target):
             localns = dict(vars(type(target)))
-            target = target.__call__
+            target = inspect.unwrap(target.__call__)
         globalns = getattr(target, "__globals__", {})
     except Exception as exc:
         issues.append(
