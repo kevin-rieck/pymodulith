@@ -1,8 +1,8 @@
 # pymodulith
 
-Explicit typed composition metadata, declared-graph validation and immutable
-compiled plans for Python 3.13+. Dependency resolution and lifecycle runtime
-are planned, not yet implemented. See the
+Explicit typed composition metadata, declared-graph validation, immutable
+compiled plans and serial scoped resolution for Python 3.13+. Lifecycle and
+concurrency safety remain incomplete. See the
 [M1 implementation contract](docs/m1-contract.md) and the
 [backend decision and reproducible comparison](docs/adrs/0001-runtime-backend.md).
 
@@ -30,7 +30,30 @@ def stock() -> Stock:
 
 
 app = Application("shop").include(inventory)
+
+
+async def main() -> int:
+    async with app.lifespan():
+        async with app.operation() as operation:
+            stock = await operation.get(Inventory)
+            return stock.available()
 ```
+
+Resolution is lazy and uses compiled arguments. Each lifespan has a fresh
+application cache; each operation has its own cache and resource teardown.
+Only exported tokens may be requested. Explicit resources are entered and
+closed in reverse acquisition order; context-manager-shaped ordinary values
+are not entered. A failed resolution unwinds operation resources acquired by
+that attempt. Retained operations cannot resolve after exit.
+
+This is a limited serial executor, not a lifecycle-safe or concurrency-safe
+runtime. Module lifespan hooks are validated but **not executed**, application
+providers are not eagerly initialized, and shutdown does not drain operations.
+Do not resolve concurrently in the same scope (including application providers
+shared by concurrent operations), exit a scope while work is active, or share
+scopes across threads or event loops. Cancellation and cleanup failure behavior
+has not passed the lifecycle/concurrency gates. Issues #7 and #8 own those
+capabilities; #10 owns comprehensive no-reflection and performance evidence.
 
 Tokens are classes or protocols, compared by identity. Providers are private
 unless `export=True`; modules declare permitted external tokens with

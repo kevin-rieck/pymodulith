@@ -1,11 +1,13 @@
 """Typed, declarative composition metadata."""
 
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncGenerator, Callable, Iterable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from .runtime import Operation, _Runtime
     from .validation import CompiledApplication
 
 
@@ -124,6 +126,7 @@ class Application:
         self._name = _name(name)
         self._modules: list[Module] = []
         self._plan: CompiledApplication | None = None
+        self._runtime: _Runtime | None = None
 
     @property
     def name(self) -> str:
@@ -143,6 +146,39 @@ class Application:
                 module._compiled = True
             self._plan = plan
         return self._plan
+
+    @asynccontextmanager
+    async def lifespan(self) -> AsyncGenerator[None]:
+        """Open a fresh application scope for serial resolution."""
+        from .runtime import _Runtime
+
+        if self._runtime is not None:
+            raise RuntimeError("application lifespan is already active")
+        runtime = _Runtime(self.validate())
+        self._runtime = runtime
+        try:
+            async with runtime.stack:
+                try:
+                    yield
+                finally:
+                    runtime.active = False
+        finally:
+            self._runtime = None
+
+    @asynccontextmanager
+    async def operation(self) -> AsyncGenerator["Operation"]:
+        """Open an operation within the current application lifespan."""
+        from .runtime import Operation
+
+        runtime = self._runtime
+        if runtime is None or not runtime.active:
+            raise RuntimeError("application lifespan is not active")
+        operation = Operation(runtime)
+        async with operation._stack:
+            try:
+                yield operation
+            finally:
+                operation._active = False
 
     def include(self, *modules: Module) -> "Application":
         if self._plan is not None:
