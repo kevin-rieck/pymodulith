@@ -1,7 +1,7 @@
 # M1 implementation contract
 
-**Status: registration and declared-graph validation implemented; compiled plans
-and runtime planned.** This is the reviewable contract for the M1 composition
+**Status: registration, declared-graph validation and compiled plans implemented;
+runtime planned.** This is the reviewable contract for the M1 composition
 kernel, not documentation of a working runtime. The current API is described
 in the [README](../README.md). Python **>=3.13** remains the baseline.
 
@@ -86,12 +86,13 @@ Application lifespan and operation are async context managers;
 `Operation.get(type[T]) -> T` is awaited. Graph validation raises the public
 `ValidationError`, importable from `pymodulith`, with an `issues` collection
 of structured diagnostics as described below. Exact compiled plan types and
-serialization are not public commitments here. Currently `validate()` returns
-`None` on success and does not compile, cache, or freeze declarations. Each
-`ValidationIssue` exposes `code`, `message`, `module`, `provider`, `parameter`,
-`token`, `path`, and `factory` (where applicable); token and factory labels are
-qualified names. Cycle paths follow dependency edges and repeat the first node.
-Module edges represent declared requirements, including unused permissions.
+serialization are not public commitments here. `validate()` returns a cached,
+inspectable plan on success; it contains no runtime instances or scope caches.
+Each `ValidationIssue` exposes `code`, `message`, `module`, `provider`,
+`parameter`, `token`, `path`, and `factory` (where applicable); token and factory
+labels are qualified names. Cycle paths follow dependency edges and repeat the
+first node. Module edges represent declared requirements, including unused
+permissions.
 
 ## Declarations and validation
 
@@ -126,6 +127,13 @@ Module edges represent declared requirements, including unused permissions.
   even through retained module handles or nested views. A failed validation
   does not partially freeze the application and can be corrected through
   supported registration. Compiled metadata contains no runtime caches.
+  A module may be included in multiple applications; the first successful
+  compilation freezes that module's registrations for every application that
+  shares it. Each application compiles its own plan, and a fresh module is
+  required to change its declarations. A failure freezes no additional modules.
+  Provider keys are plan-local integers, and exports use `id(token)` for identity
+  even for unhashable tokens; each plan retains the tokens. The plan is not a
+  sandbox for trusted factories and tokens.
 - Runtime startup, resolution, cache hits and subsequent lifespans use those
   plans without signature/type-hint reflection, discovery, contract search or
   graph revalidation. Resolve at the entrypoint and call services normally.
@@ -209,8 +217,9 @@ override is assumed.
   forward references. Validation invokes no factories or resources.
 - [ ] **Immutability and compilation:** repeated validation returns the same
   snapshot; nested published metadata and original registration handles cannot
-  change compiled behavior; failed validation can be corrected; patched
-  reflection and validation fail if called during runtime or later lifespans.
+  change compiled behavior; failed validation can be corrected. Compile-only
+  tests cover reflection and caching; runtime and later-lifespan no-reflection
+  tests remain deferred until runtime exists.
 - [ ] **Scope ownership:** app providers cannot depend on operation providers;
   lifespan hooks receive only app dependencies. Cache once per scope, isolate
   independent operations and applications, reject `get` outside an active

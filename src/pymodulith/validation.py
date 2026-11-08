@@ -2,12 +2,49 @@
 
 import inspect
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, get_origin, get_type_hints
+from graphlib import TopologicalSorter
+from types import MappingProxyType
+from typing import Any, Literal, get_origin, get_type_hints
 
 from .registration import Module, Provider, Scope
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledProvider:
+    module: str
+    token: type
+    factory: Callable[..., object]
+    scope: Scope
+    export: bool
+    kind: Literal["value", "resource"]
+    arguments: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledLifespan:
+    factory: Callable[..., object]
+    arguments: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledModule:
+    name: str
+    requires: tuple[type, ...]
+    providers: tuple[int, ...]
+    lifespan: CompiledLifespan | None
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledApplication:
+    name: str
+    modules: Mapping[str, CompiledModule]
+    providers: Mapping[int, CompiledProvider]
+    exports: Mapping[int, int]
+    provider_order: tuple[int, ...]
+    module_order: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +254,7 @@ def _cycles(edges: list[set[int]]) -> list[tuple[int, ...]]:
     return cycles
 
 
-def validate(modules: Sequence[Module]) -> None:
+def validate(name: str, modules: Sequence[Module]) -> CompiledApplication:
     modules = sorted(modules, key=lambda module: module.name)
     issues: list[ValidationIssue] = []
     providers: list[tuple[Module, Provider]] = [
@@ -248,6 +285,8 @@ def validate(modules: Sequence[Module]) -> None:
     module_edges: list[set[int]] = [set() for _ in modules]
     provider_edges: list[set[int]] = [set() for _ in providers]
     edge_parameters: dict[tuple[int, int], str] = {}
+    provider_arguments: list[list[tuple[str, int]]] = [[] for _ in providers]
+    lifespan_arguments: dict[str, list[tuple[str, int]]] = {}
     for module in modules:
         seen: set[int] = set()
         for token in sorted(module.requires, key=_label):
@@ -300,6 +339,11 @@ def validate(modules: Sequence[Module]) -> None:
         factory: Callable[..., object],
         source: int | None,
     ) -> None:
+        arguments = (
+            provider_arguments[source]
+            if source is not None
+            else lifespan_arguments.setdefault(module.name, [])
+        )
         for parameter, token in _dependencies(
             factory, module.name, provider_label, issues
         ):
@@ -347,6 +391,7 @@ def validate(modules: Sequence[Module]) -> None:
                     )
                 )
                 continue
+            arguments.append((parameter, target))
             if source is not None:
                 provider_edges[source].add(target)
                 edge = (source, target)
@@ -436,3 +481,59 @@ def validate(modules: Sequence[Module]) -> None:
             )
         )
         raise ValidationError(issues)
+
+    provider_order = tuple(
+        TopologicalSorter(
+            {index: sorted(edges) for index, edges in enumerate(provider_edges)}
+        ).static_order()
+    )
+    module_order = tuple(
+        modules[index].name
+        for index in TopologicalSorter(
+            {index: sorted(edges) for index, edges in enumerate(module_edges)}
+        ).static_order()
+    )
+    return CompiledApplication(
+        name=name,
+        modules=MappingProxyType(
+            {
+                module.name: CompiledModule(
+                    name=module.name,
+                    requires=module.requires,
+                    providers=tuple(
+                        index
+                        for index, (owner, _) in enumerate(providers)
+                        if owner is module
+                    ),
+                    lifespan=(
+                        CompiledLifespan(
+                            module.lifespan_factory,
+                            tuple(lifespan_arguments[module.name]),
+                        )
+                        if module.lifespan_factory is not None
+                        else None
+                    ),
+                )
+                for module in modules
+            }
+        ),
+        providers=MappingProxyType(
+            {
+                index: CompiledProvider(
+                    module.name,
+                    provider.token,
+                    provider.factory,
+                    provider.scope,
+                    provider.export,
+                    provider.kind,
+                    tuple(provider_arguments[index]),
+                )
+                for index, (module, provider) in enumerate(providers)
+            }
+        ),
+        exports=MappingProxyType(
+            {token: owners[0] for token, owners in exports.items()}
+        ),
+        provider_order=provider_order,
+        module_order=module_order,
+    )
