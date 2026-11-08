@@ -123,7 +123,12 @@ class Dishka:
                     value = item.factory(**kwargs)
                     if inspect.isawaitable(value):
                         value = await value
-                    yield await enter(stack, value)
+                    # Dishka sends the scope exception to the generator on exit.
+                    exception = yield await enter(stack, value)
+                    if exception is not None:
+                        await stack.__aexit__(
+                            type(exception), exception, exception.__traceback__
+                        )
 
             return resource
 
@@ -139,7 +144,7 @@ class Dishka:
     @asynccontextmanager
     async def start(self):
         async with self.stack:
-            self.stack.push_async_callback(self.container.close)
+            self.stack.push_async_exit(self.container.__aexit__)
             for key in self.plan.provider_order:
                 if self.plan.providers[key].scope is Scope.APPLICATION:
                     await self.resolve(key)

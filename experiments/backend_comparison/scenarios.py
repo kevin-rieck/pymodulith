@@ -322,8 +322,55 @@ def exception_contains(exc, message):
     return False
 
 
+async def resource_exit_receives_business_error(candidate):
+    events = []
+    error = ValueError("business")
+    module = Module("resource_error")
+
+    @module.resource(AppValue, scope=Scope.APPLICATION)
+    @asynccontextmanager
+    async def app():
+        try:
+            yield AppValue()
+        except ValueError as exc:
+            events.append(("app", exc))
+            raise
+        else:
+            events.append(("app", None))
+
+    @module.resource(Service, scope=Scope.OPERATION, export=True)
+    @contextmanager
+    def service():
+        try:
+            yield Service(None, None, None)
+        except ValueError as exc:
+            events.append(("operation", exc))
+            raise
+        else:
+            events.append(("operation", None))
+
+    runtime = candidate(compile_module(module))
+    try:
+        async with runtime.start(), runtime.operation() as operation:
+            await operation.get(Service)
+            raise error
+    except ValueError as exc:
+        assert exc is error
+    else:
+        raise AssertionError("business error was lost")
+    assert events == [("operation", error), ("app", error)], events
+
+
 async def cleanup_failure_preserves_business(candidate):
     module = Module("cleanup")
+
+    @module.resource(AppValue, scope=Scope.APPLICATION)
+    @asynccontextmanager
+    async def app():
+        try:
+            yield AppValue()
+        finally:
+            raise Fault("app cleanup")
 
     @module.resource(Service, scope=Scope.OPERATION, export=True)
     @contextmanager
@@ -331,7 +378,7 @@ async def cleanup_failure_preserves_business(candidate):
         try:
             yield Service(None, None, None)
         finally:
-            raise Fault("cleanup")
+            raise Fault("operation cleanup")
 
     runtime = candidate(compile_module(module))
     try:
@@ -340,7 +387,8 @@ async def cleanup_failure_preserves_business(candidate):
             raise ValueError("business")
     except BaseException as exc:
         assert exception_contains(exc, "business"), repr(exc)
-        assert exception_contains(exc, "cleanup"), repr(exc)
+        assert exception_contains(exc, "operation cleanup"), repr(exc)
+        assert exception_contains(exc, "app cleanup"), repr(exc)
     else:
         raise AssertionError("business and cleanup must be observable")
 
@@ -559,6 +607,7 @@ SCENARIOS = {
         cancelled_initializer,
         failed_initialization_retry,
         startup_rollback,
+        resource_exit_receives_business_error,
         cleanup_failure_preserves_business,
         no_hot_path_reflection,
         cancelled_waiter_resource,

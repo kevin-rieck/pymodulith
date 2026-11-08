@@ -47,11 +47,13 @@ The reference is an original, bounded adaptation of the cache/check/build and
 (see archive `ARCHIVE_README.md`, ADR-002, ADR-004 and PRD-002). Unlike that
 prototype it consumes pymodulith's real compiled plan and explicitly enters
 only `resource` declarations. It is not a verbatim copy, has no production
-state machine, and inherits the unsynchronized cache race. The Dishka adapter
-translates each plan-local key to a private synthetic type and constructs
-Dishka declarations on the cold path; APP maps to APPLICATION and REQUEST to
-OPERATION. It uses locked REQUEST scopes, eager APP resolution in provider order,
-and an outer stack for module hooks. Dishka owns provider-resource exits.
+state machine, and inherits the unsynchronized cache race. Its restart-cache
+failure is specific to this adaptation: the archive creates a fresh runtime and
+cache for each lifespan, so the failure is not evidence against archive restart.
+The Dishka adapter translates each plan-local key to a private synthetic type
+and constructs Dishka declarations on the cold path; APP maps to APPLICATION
+and REQUEST to OPERATION. It uses locked REQUEST scopes, eager APP resolution
+in provider order, and an outer stack for module hooks. Dishka owns resource exits.
 Plan-local types avoid token equality and private-module collisions in this
 probe. Both use the same explicit business factories, resource declarations,
 compiled arguments, hooks and operation boundary. Neither is a public API.
@@ -72,7 +74,8 @@ Dishka 1.10.1. These are measurements, not claims about a future runtime.
 | `cancelled_initializer` | F | F | both initialized twice after owner cancellation |
 | `failed_initialization_retry` | P | P | sequential failure then successful retry, cached once |
 | `startup_rollback` | P | P | entered APP resource exits after dependent startup failure |
-| `cleanup_failure_preserves_business` | P | P | business and cleanup errors both observable |
+| `resource_exit_receives_business_error` | P | P | operation and APP resources receive the original business exception |
+| `cleanup_failure_preserves_business` | P | P | business and both operation/APP cleanup errors observable |
 | `no_hot_path_reflection` | P | P | startup, first and cached gets, later operation and restart |
 | `cancelled_waiter_resource` | F | P | reference started resource twice; one successful enter/close |
 | `operation_rollback` | P | P | entered operation resource exits on dependent failure |
@@ -81,6 +84,10 @@ Dishka 1.10.1. These are measurements, not claims about a future runtime.
 | `restart_fresh_instances` | F | P | reference reuses APP cache after restart |
 | `closed_operation_rejected` | F | F | both allow lookup after scope exit |
 | `shutdown_drains_operation` | F | F | neither adapter waits for active operation cleanup |
+
+The exception-forwarding scenario uses non-suppressing resources. Dishka's
+container does not propagate a resource's suppression decision; the result does
+not establish equivalent behavior for suppressing context managers.
 
 The reflection test patches `inspect.signature`, `typing.get_type_hints` and
 loaded Dishka and pymodulith aliases **after** plan validation and adapter
@@ -97,8 +104,8 @@ matrix is a bounded decision probe, not the full M1 acceptance suite.
 
 ## Surface, diagnosability, dependencies and timings
 
-The spike has 168 adapter lines total: common call/enter helpers, approximately
-59 lines for the reference classes and 83 for Dishka classes (including
+The spike has 173 adapter lines total: common call/enter helpers, approximately
+59 lines for the reference classes and 88 for Dishka classes (including
 whitespace and both operation facades). This is not a production LOC forecast:
 reference omits the concurrency, lifecycle, error and state machinery, and the
 Dishka translation depends on generated signatures, synthetic types and
@@ -121,10 +128,10 @@ medians of 300 no-delay or 50 delayed operations):
 
 | Candidate/workload | compile | adapter | startup | scope enter | first get | hit | business | exit |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| reference, no delay | 199.0 | 1.3 | 16.1 | 2.9 | 11.5 | 0.8 | 0.7 | 4.1 |
-| Dishka, no delay | 200.7 | 1503.3 | 142.1 | 4.7 | 18.2 | 2.2 | 0.8 | 7.7 |
-| reference, 1 ms simulated wait | 247.9 | 1.6 | 19.9 | 8.7 | 15419.5 | 3.5 | 1.6 | 12.6 |
-| Dishka, 1 ms simulated wait | 308.2 | 1992.1 | 170.0 | 10.8 | 15561.9 | 6.1 | 1.6 | 19.2 |
+| reference, no delay | 194.3 | 1.4 | 16.5 | 3.0 | 11.6 | 0.8 | 0.7 | 4.1 |
+| Dishka, no delay | 208.8 | 1506.1 | 142.1 | 4.5 | 17.8 | 2.0 | 0.7 | 7.6 |
+| reference, 1 ms simulated wait | 214.8 | 1.3 | 16.5 | 8.4 | 15565.6 | 3.2 | 1.4 | 12.6 |
+| Dishka, 1 ms simulated wait | 289.6 | 2001.4 | 170.6 | 10.1 | 15499.4 | 5.3 | 1.4 | 18.1 |
 
 Compilation includes composition registration and validation; adapter creation
 is separate; startup eagerly creates the APP value and enters the hook. Every
