@@ -170,6 +170,14 @@ lifecycle. The second uses the installed `pymodulith` package. See the
 [example guide](examples/shop/README.md) for the design, replacement-module
 and test-isolation examples, and lifecycle limitations.
 
+## npm tooling
+
+Python setup remains uv-based. For optional npm tooling, use npm 11.13.0,
+pinned in `package.json`; `devEngines` rejects other npm versions before
+`install`, `ci`, and `run` commands. The project `.npmrc` sets
+`min-release-age=7`, delaying newly published versions for seven days during
+resolution. This cooldown delays updates; it does not guarantee package safety.
+
 ## Development
 
 ```sh
