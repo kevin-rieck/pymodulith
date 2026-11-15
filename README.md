@@ -156,6 +156,20 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then:
 uv sync --locked
 ```
 
+## Framework-free shop example
+
+From a checkout after `uv sync --locked`, run:
+
+```sh
+uv run python -m examples.shop plain
+uv run python -m examples.shop pymodulith
+```
+
+Both print the same receipt, remaining stock, report count, and resource
+lifecycle. The second uses the installed `pymodulith` package. See the
+[example guide](examples/shop/README.md) for the design, replacement-module
+and test-isolation examples, and lifecycle limitations.
+
 ## Development
 
 ```sh
