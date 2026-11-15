@@ -1,10 +1,10 @@
 # M1 implementation contract
 
-**Status: registration, validation, compiled plans, lifecycle and limited serial
-scoped resolution implemented; concurrent resolution remains incomplete.** This is
-the reviewable contract for the full M1 composition kernel, not a claim that
-all runtime gates have passed. The current API and its limitations are described
-in the [README](../README.md). Python **>=3.13** remains the baseline.
+**Status: registration, validation, compiled plans, lifecycle and concurrent
+scoped resolution implemented.** This is the reviewable contract for the full
+M1 composition kernel, not a claim that all later performance gates have passed.
+The current API and its limitations are described in the [README](../README.md).
+Python **>=3.13** remains the baseline.
 
 ## Target API
 
@@ -183,24 +183,35 @@ discovery in M1.
   resources. The host owns timeouts and cancellation policy. Overlapping or
   nested lifespans of one application are rejected. Restart after normal stop
   or failure reuses the compiled plan, not old instances. Retained operations
-  cannot resolve after exit. Cancellation during startup rolls back successful
-  entries. Cancellation during drain is recorded while waiting for all admitted
-  operations. Exits run in the caller's task; cancellation may interrupt an
-  individual exit, but the remaining exits are attempted. The host must allow
-  drain and cleanup to complete rather than force-cancelling or repeatedly
-  cancelling shutdown; an interrupted exit cannot be guaranteed to release its
-  resources. A stuck operation can delay drain indefinitely. Entry code owns
-  cleanup of partially acquired state if its own entry fails or is cancelled.
-  Business/startup errors and all cleanup failures remain observable even if a
-  resource attempts to suppress an error.
-- Concurrent resolution must initialize a provider once per scope without a
-  global lock held across arbitrary awaited user code. Cancellation of a waiter
-  must not corrupt shared initialization or leak resources. Initialization
-  failure/retry, cancellation ownership, supported task/event-loop use and
-  unsupported thread/process cases must be explicitly specified and tested in
-  the lifecycle implementation; abrupt process termination cannot guarantee
-  cleanup. Preserve the original business/startup error while making cleanup
-  failures observable, e.g. through standard chaining or exception groups.
+  cannot resolve after exit. Provider startup cancellation waits for owned
+  initialization before rollback; cancellation during drain, operation cleanup
+  or provider-resource exit is recorded while owned work finishes. Module hooks
+  run in the lifespan host's task and a cancelled hook exit can be interrupted;
+  remaining exits are still attempted, but the interrupted hook must release its
+  own resources. A stuck initializer, operation or exit can delay drain
+  indefinitely. Entry code owns cleanup of partially acquired state if its own
+  entry fails or is cancelled. Business/startup errors and all cleanup failures
+  remain observable even if a resource attempts to suppress an error.
+- Concurrent resolution initializes each provider once per scope without a
+  scope lock held across user awaits, including transitive dependencies. Each
+  provider initialization has a scope-owned task; resource entry and exit share
+  that task and its context. The task inherits a snapshot of the creator's
+  `ContextVar` context, but mutations do not propagate to callers or independent
+  provider tasks. Cancelling any waiter does not cancel shared initialization;
+  the waiter receives cancellation. Current non-cancelled waiters receive the
+  same outcome. Failed attempts are evicted after those waiters observe failure,
+  allowing a later retry; a failure with no observer is reported on scope exit.
+  Rollback closes exclusive acquisitions, but does not close dependencies still
+  used by another initialization or already committed by a successful request.
+  Scope exit settles in-flight initialization and requests before resource exits.
+  Reentrant independent keys progress; dynamic wait cycles raise with a provider
+  path. Cycle checks conservatively attribute tasks spawned by a still-running
+  initializer to it, so even an unawaited child can be rejected for a circular
+  provider request; this provenance expires when the initializer completes.
+  Child-task requests otherwise own their own rollback/commit outcome. Live
+  scopes support tasks on one event loop and thread only; cross-loop and
+  cross-thread calls are rejected, and there is no multiprocess sharing or
+  abrupt-termination cleanup guarantee.
 - An operation is not a transaction. Commit, rollback, cross-module consistency,
   retries, events and durable delivery remain explicit application concerns.
 

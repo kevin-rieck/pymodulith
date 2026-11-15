@@ -203,7 +203,9 @@ def test_drain_waits_through_operation_cleanup_and_rejects_admission():
         op_task = asyncio.create_task(worker())
         await asyncio.wait_for(op_ready.wait(), 2)
         leave_app.set()
-        await asyncio.sleep(0)
+        checkpoint = asyncio.Event()
+        asyncio.get_running_loop().call_soon(checkpoint.set)
+        await checkpoint.wait()
         with pytest.raises(RuntimeError, match="draining"):
             async with app.operation():
                 pass
@@ -311,10 +313,11 @@ def test_startup_cleanup_failures_and_suppression_preserve_original():
     asyncio.run(run())
 
 
-def test_cancellation_during_startup_unwinds_only_successful_entries():
+def test_cancellation_during_startup_settles_entry_before_rollback():
     async def run():
         events = []
         waiting = asyncio.Event()
+        release = asyncio.Event()
         module = Module("cancel")
 
         @module.resource(First, scope=Scope.APPLICATION)
@@ -330,12 +333,13 @@ def test_cancellation_during_startup_unwinds_only_successful_entries():
         @asynccontextmanager
         async def second(first: First):
             events.append("second entering")
+            waiting.set()
+            await release.wait()
             try:
-                waiting.set()
-                await asyncio.Event().wait()
+                events.append("second entered")
                 yield Second()
             finally:
-                events.append("second enter cancelled")
+                events.append("second exit")
 
         app = Application("app").include(module)
 
@@ -346,12 +350,18 @@ def test_cancellation_during_startup_unwinds_only_successful_entries():
         task = asyncio.create_task(host())
         await asyncio.wait_for(waiting.wait(), 2)
         task.cancel()
+        checkpoint = asyncio.Event()
+        asyncio.get_running_loop().call_soon(checkpoint.set)
+        await checkpoint.wait()
+        assert not task.done()
+        release.set()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 2)
         assert events == [
             "first enter",
             "second entering",
-            "second enter cancelled",
+            "second entered",
+            "second exit",
             "first exit",
         ]
         with pytest.raises(RuntimeError, match="stopped"):
@@ -361,7 +371,7 @@ def test_cancellation_during_startup_unwinds_only_successful_entries():
     asyncio.run(run())
 
 
-def test_cancellation_during_drain_and_exit_unwinds_remaining_resources():
+def test_cancellation_during_drain_and_exit_finishes_owned_cleanup():
     async def run():
         events = []
         app_ready = asyncio.Event()
@@ -369,9 +379,11 @@ def test_cancellation_during_drain_and_exit_unwinds_remaining_resources():
         leave_app = asyncio.Event()
         leave_op = asyncio.Event()
         work_cleaning = asyncio.Event()
+        finish_work = asyncio.Event()
         second_cleaning = asyncio.Event()
         finish_second = asyncio.Event()
         app_cleaning = asyncio.Event()
+        finish_app = asyncio.Event()
         module = Module("cancel")
 
         @module.resource(First, scope=Scope.APPLICATION)
@@ -382,10 +394,8 @@ def test_cancellation_during_drain_and_exit_unwinds_remaining_resources():
             finally:
                 events.append("app cleaning")
                 app_cleaning.set()
-                try:
-                    await asyncio.Event().wait()
-                finally:
-                    events.append("app exit interrupted")
+                await finish_app.wait()
+                events.append("app closed")
 
         @module.resource(Second, scope=Scope.OPERATION)
         @asynccontextmanager
@@ -406,10 +416,8 @@ def test_cancellation_during_drain_and_exit_unwinds_remaining_resources():
             finally:
                 events.append("work cleaning")
                 work_cleaning.set()
-                try:
-                    await asyncio.Event().wait()
-                finally:
-                    events.append("work exit interrupted")
+                await finish_work.wait()
+                events.append("work closed")
 
         app = Application("app").include(module)
 
@@ -429,19 +437,24 @@ def test_cancellation_during_drain_and_exit_unwinds_remaining_resources():
         op_task = asyncio.create_task(worker())
         await asyncio.wait_for(op_ready.wait(), 2)
         leave_app.set()
-        await asyncio.sleep(0)
+        checkpoint = asyncio.Event()
+        asyncio.get_running_loop().call_soon(checkpoint.set)
+        await checkpoint.wait()
         host_task.cancel()
         leave_op.set()
         await asyncio.wait_for(work_cleaning.wait(), 2)
         op_task.cancel()
-        await asyncio.wait_for(second_cleaning.wait(), 2)
         assert not host_task.done() and not op_task.done()
         assert "app cleaning" not in events
+        finish_work.set()
+        await asyncio.wait_for(second_cleaning.wait(), 2)
         finish_second.set()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(op_task, 2)
         await asyncio.wait_for(app_cleaning.wait(), 2)
         host_task.cancel()
+        assert not host_task.done()
+        finish_app.set()
         with pytest.raises(BaseExceptionGroup) as caught:
             await asyncio.wait_for(host_task, 2)
         assert all(
@@ -449,11 +462,11 @@ def test_cancellation_during_drain_and_exit_unwinds_remaining_resources():
         )
         assert events == [
             "work cleaning",
-            "work exit interrupted",
+            "work closed",
             "second cleaning",
             "second closed",
             "app cleaning",
-            "app exit interrupted",
+            "app closed",
         ]
         with pytest.raises(RuntimeError, match="stopped"):
             async with app.operation():
@@ -462,10 +475,11 @@ def test_cancellation_during_drain_and_exit_unwinds_remaining_resources():
     asyncio.run(run())
 
 
-def test_cancelled_resolution_rolls_back_and_cleanup_error_is_visible():
+def test_cancelled_waiter_does_not_abandon_initialization_or_cleanup_error():
     async def run():
         module = Module("rollback")
         entered = asyncio.Event()
+        release = asyncio.Event()
         events = []
 
         @module.resource(First, scope=Scope.OPERATION)
@@ -475,31 +489,25 @@ def test_cancelled_resolution_rolls_back_and_cleanup_error_is_visible():
                 yield First()
             finally:
                 events.append("closed")
-                raise RuntimeError("rollback cleanup")
+                raise RuntimeError("cleanup")
 
         @module.provide(Work, scope=Scope.OPERATION, export=True)
         async def work(first: First):
             entered.set()
-            await asyncio.Event().wait()
+            await release.wait()
             return Work()
 
         app = Application("app").include(module)
-
         async with app.lifespan():
-            async with app.operation() as operation:
-                task = asyncio.create_task(operation.get(Work))
-                await asyncio.wait_for(entered.wait(), 2)
-                task.cancel()
-                with pytest.raises(BaseExceptionGroup) as caught:
-                    await asyncio.wait_for(task, 2)
-                assert any(
-                    isinstance(error, asyncio.CancelledError)
-                    for error in leaves(caught.value)
-                )
-                assert any(
-                    str(error) == "rollback cleanup" for error in leaves(caught.value)
-                )
-                assert events == ["closed"]
+            with pytest.raises(RuntimeError, match="cleanup"):
+                async with app.operation() as operation:
+                    task = asyncio.create_task(operation.get(Work))
+                    await asyncio.wait_for(entered.wait(), 2)
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await asyncio.wait_for(task, 2)
+                    release.set()
+            assert events == ["closed"]
 
     asyncio.run(run())
 
@@ -626,7 +634,7 @@ def test_invalid_hook_result_rolls_back_and_identifies_module():
     asyncio.run(run())
 
 
-def test_cleanup_preserves_context_variables_from_entry():
+def test_resource_context_variables_are_isolated_and_reset_in_owner_task():
     from contextvars import ContextVar
 
     current = ContextVar("current", default="outside")
@@ -637,28 +645,34 @@ def test_cleanup_preserves_context_variables_from_entry():
     def first():
         token = current.set("application")
         try:
+            assert current.get() == "application"
             yield First()
         finally:
+            assert current.get() == "application"
             current.reset(token)
+            assert current.get() == "outside"
 
     @module.resource(Work, scope=Scope.OPERATION, export=True)
     @contextmanager
     def work():
         token = current.set("operation")
         try:
+            assert current.get() == "operation"
             yield Work()
         finally:
+            assert current.get() == "operation"
             current.reset(token)
+            assert current.get() == "outside"
 
     app = Application("app").include(module)
 
     async def run():
         async with app.lifespan():
-            assert current.get() == "application"
+            assert current.get() == "outside"
             async with app.operation() as operation:
                 await operation.get(Work)
-                assert current.get() == "operation"
-            assert current.get() == "application"
+                assert current.get() == "outside"
+            assert current.get() == "outside"
         assert current.get() == "outside"
 
     asyncio.run(run())
@@ -747,5 +761,51 @@ def test_resource_suppression_cannot_hide_business_error():
                     await operation.get(Work)
                     raise ValueError("business")
         assert seen == ["business"]
+
+    asyncio.run(run())
+
+
+def test_cancelled_hook_exit_preserves_business_error_and_closes_resources():
+    async def run():
+        cleaning = asyncio.Event()
+        events = []
+        module = Module("hook-cancel")
+
+        @module.resource(First, scope=Scope.APPLICATION)
+        @asynccontextmanager
+        async def resource():
+            try:
+                yield First()
+            finally:
+                events.append("resource closed")
+
+        @module.lifespan
+        @asynccontextmanager
+        async def hook(first: First):
+            try:
+                yield
+            finally:
+                cleaning.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    events.append("hook interrupted")
+
+        app = Application("app").include(module)
+
+        async def host():
+            async with app.lifespan():
+                raise ValueError("business")
+
+        task = asyncio.create_task(host())
+        await asyncio.wait_for(cleaning.wait(), 2)
+        task.cancel()
+        with pytest.raises(BaseExceptionGroup) as caught:
+            await asyncio.wait_for(task, 2)
+        assert any(
+            isinstance(error, asyncio.CancelledError) for error in leaves(caught.value)
+        )
+        assert any(str(error) == "business" for error in leaves(caught.value))
+        assert events == ["hook interrupted", "resource closed"]
 
     asyncio.run(run())
