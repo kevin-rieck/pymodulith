@@ -232,6 +232,7 @@ def test_operations_share_application_stock_but_not_sessions():
         async with app.lifespan():
             async with app.operation() as operation:
                 stock = await operation.get(Inventory)
+                reporting = await operation.get(Reporting)
                 first = await operation.get(OrderSession)
                 assert await operation.get(OrderSession) is first
                 await (await operation.get(PlaceOrder)).place("widget", 1)
@@ -240,8 +241,12 @@ def test_operations_share_application_stock_but_not_sessions():
                 second = await operation.get(OrderSession)
                 assert second is not first
                 assert await operation.get(Inventory) is stock
+                assert await operation.get(Reporting) is reporting
+                assert await reporting.records() == (Receipt("widget", 1),)
                 assert await stock.available("widget") == 3
             assert second.closed
+        with pytest.raises(RuntimeError, match="stock is closed"):
+            await stock.available("widget")
         assert events == [
             "stock.open",
             "session.open",
@@ -274,8 +279,11 @@ def test_operation_failure_cleans_both_scopes():
         with pytest.raises(RuntimeError, match="report failure"):
             async with app.lifespan():
                 async with app.operation() as operation:
+                    stock = await operation.get(Inventory)
                     orders = await operation.get(PlaceOrder)
                     await orders.place("widget", 1)
+        with pytest.raises(RuntimeError, match="stock is closed"):
+            await stock.available("widget")
         assert events == ["stock.open", "session.open", "session.close", "stock.close"]
 
     asyncio.run(run())
