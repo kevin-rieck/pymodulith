@@ -2,7 +2,9 @@
 
 **Status: registration, validation, compiled plans, lifecycle and concurrent
 scoped resolution implemented.** This is the reviewable contract for the full
-M1 composition kernel, not a claim that all later performance gates have passed.
+M1 composition kernel, not a production-readiness claim. The bounded
+[issue #10 baseline](performance/core-baseline.md) records the measured gates
+and their limitations.
 The current API and its limitations are described in the [README](../README.md).
 Python **>=3.13** remains the baseline.
 
@@ -217,40 +219,53 @@ discovery in M1.
 
 ## Requirement-to-test checklist
 
-These are acceptance targets for the complete M1 implementation, **not passing
-claims about the current package**. A fresh composition is used
-for a replacement or fake; no mutation of a compiled application or global
-override is assumed.
+The linked tests run in the M1 CI suite on Python 3.13 and 3.14. A fresh
+composition is used for a replacement or fake; no mutation of a compiled
+application or global override is assumed. The selected backend and its safety
+matrix are documented in [ADR 0001](adrs/0001-runtime-backend.md).
 
-- [ ] **Ownership and identity:** reject duplicate exported contracts, invalid
+- [x] **Ownership and identity:** reject duplicate exported contracts, invalid
   registration and duplicate module names/local providers; same-named distinct
   types remain distinct; a replacement module exports the same contract without
   changing consumer code. Pure business tests construct objects with fakes.
-- [ ] **Visibility:** private providers are invisible to host operations and
+  Evidence: [registration](../tests/test_registration.py),
+  [identity validation](../tests/test_validation.py), and
+  [constructor fakes and replacement modules](../tests/test_shop_example.py).
+- [x] **Visibility:** private providers are invisible to host operations and
   other modules; local providers take precedence; `requires` is explicit; the
-  same private token works independently in two modules.
-- [ ] **Graph and diagnostics:** seed missing/duplicate exports, undeclared,
+  same private token works independently in two modules. Evidence:
+  [validation](../tests/test_validation.py) and
+  [runtime visibility](../tests/test_runtime.py).
+- [x] **Graph and diagnostics:** seed missing/duplicate exports, undeclared,
   self/redundant requirements, self-dependency, provider/module cycles and
   invalid scope edges; assert stable structured codes, useful locations, full
   cycle paths, deterministic aggregation and inclusion-order independence.
   Cover absent, unresolved and unsupported annotations/signatures and valid
-  forward references. Validation invokes no factories or resources.
-- [ ] **Immutability and compilation:** repeated validation returns the same
+  forward references. Validation invokes no factories or resources. Evidence:
+  [graph and diagnostics tests](../tests/test_validation.py).
+- [x] **Immutability and compilation:** repeated validation returns the same
   snapshot; nested published metadata and original registration handles cannot
   change compiled behavior; failed validation can be corrected. Compile-only
-  tests cover reflection and caching; comprehensive runtime and later-lifespan
-  no-reflection evidence remains deferred to issue #10.
-- [ ] **Scope ownership:** app providers cannot depend on operation providers;
+  tests cover caching; [runtime no-reflection tests](../tests/test_no_runtime_reflection.py)
+  cover startup, first and cached resolution, cleanup and restart. Evidence:
+  [compilation tests](../tests/test_compilation.py) and the bounded
+  [issue #10 performance baseline](performance/core-baseline.md).
+- [x] **Scope ownership:** app providers cannot depend on operation providers;
   lifespan hooks receive only app dependencies. Cache once per scope, isolate
   independent operations and applications, reject `get` outside an active
   operation, and distinguish context-manager-shaped values from resources.
-- [ ] **Cleanup and concurrency:** event logs prove dependency-first startup,
+  Evidence: [validation](../tests/test_validation.py) and
+  [scoped runtime](../tests/test_runtime.py).
+- [x] **Cleanup and concurrency:** event logs prove dependency-first startup,
   reverse successful-enter teardown and startup/operation rollback. Use
   barriers for concurrent initialization, cancellation and drain races;
   assert no live handles after supported failures, no new operations during
   drain, and preservation of business errors alongside cleanup failures.
   Verify restart uses fresh instances and at least 100 overlapping operations
-  keep operation-scoped instances isolated.
+  keep operation-scoped instances isolated. Evidence:
+  [lifecycle](../tests/test_lifecycle.py),
+  [concurrent resolution](../tests/test_concurrent_resolution.py), and the
+  [selected-runtime matrix](../tests/test_selected_runtime_matrix.py).
 
 ## Milestone boundaries and provenance
 
@@ -268,6 +283,8 @@ adapters, multi-wheel composition and optional discovery. M1 validation checks
 **declared graphs**, not Python source imports. Events, command dispatch,
 transaction orchestration and distributed delivery are not kernel promises.
 No production readiness or transport latency claim follows from M1 alone.
+The repository has no project license or license grant. Public redistribution
+or a PyPI release requires a maintainer licensing decision.
 
 This document is an original, self-contained synthesis of the local historical
 **Modframe** research archive `modframe-all-artifacts/`: `ARCHIVE_README.md`,

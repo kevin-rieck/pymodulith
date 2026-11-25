@@ -1,7 +1,7 @@
 [project]
 name = "pymodulith"
 version = "0.1.0"
-description = "Python project scaffold with pytest, ty, Ruff, and uv"
+description = "Explicit modular composition and scoped lifecycle management for Python"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = []
@@ -16,6 +16,10 @@ pythonpath = ["."]
 
 [tool.ruff]
 target-version = "py313"
+extend-exclude = ["modframe-all-artifacts"]
+
+[tool.ty.src]
+exclude = ["modframe-all-artifacts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
