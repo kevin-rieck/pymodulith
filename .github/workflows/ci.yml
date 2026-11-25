@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install locked environment
+        run: uv sync --locked
+      - run: uv run pytest
+      - run: uv run ty check
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv build
+      - name: Smoke test the installed wheel outside the checkout
+        shell: bash
+        run: |
+          uv venv --python ${{ matrix.python-version }} "$RUNNER_TEMP/wheel-env"
+          uv pip install --python "$RUNNER_TEMP/wheel-env/bin/python" dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-env/bin/python" -I "$GITHUB_WORKSPACE/tests/wheel_smoke.py" "$GITHUB_WORKSPACE/README.md"
