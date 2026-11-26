@@ -27,6 +27,7 @@ select = ["E", "F", "I", "UP", "B"]
 [dependency-groups]
 dev = [
     "dishka>=1.7,<2",
+    "import-linter==2.11",
     "pytest>=9.2.0",
     "ruff>=0.17.4",
     "ty>=0.0.99",
